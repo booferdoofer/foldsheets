@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.glance.appwidget.updateAll
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,6 +40,19 @@ object SheetStore {
         if (value.isEmpty()) next.remove(k) else next[k] = value
         flow.value = next
         save(context, next)
+        scheduleWidgetRefresh(context)
+    }
+
+    private var pendingRefresh: Job? = null
+
+    /** Redraws the widget shortly after each keystroke, so it updates behind the pop-up as you type. */
+    private fun scheduleWidgetRefresh(context: Context) {
+        val app = context.applicationContext
+        pendingRefresh?.cancel()
+        pendingRefresh = scope.launch {
+            delay(250)
+            SheetWidget().updateAll(app)
+        }
     }
 
     /** Re-renders every placed widget (needed when no widget session is active). */

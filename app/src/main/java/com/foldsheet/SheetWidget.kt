@@ -54,7 +54,6 @@ class SheetWidget : GlanceAppWidget() {
     }
 }
 
-private val ROW_HEADER_W = 30.dp
 private val MIN_COL_W = 72.dp
 private val CELL_H = 30.dp
 private val GAP = 1.dp
@@ -66,11 +65,9 @@ private fun SheetContent() {
     val size = LocalSize.current
 
     val outerPad = 8.dp
-    val avail = size.width - outerPad * 2 - ROW_HEADER_W
+    val avail = size.width - outerPad * 2
     val cols = (avail.value / (MIN_COL_W.value + GAP.value)).toInt().coerceIn(1, SheetStore.COLS)
-    val cellW: Dp = ((avail.value - GAP.value * cols) / cols).dp
-
-    val openApp = actionStartActivity(Intent(context, MainActivity::class.java))
+    val cellW: Dp = ((avail.value - GAP.value * (cols - 1)) / cols).dp
 
     Column(
         modifier = GlanceModifier
@@ -79,32 +76,10 @@ private fun SheetContent() {
             .background(GlanceTheme.colors.widgetBackground)
             .padding(outerPad)
     ) {
-        // Title bar
-        Row(
-            modifier = GlanceModifier.fillMaxWidth().padding(start = 4.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "FoldSheet",
-                style = TextStyle(
-                    color = GlanceTheme.colors.onSurface,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold
-                ),
-                modifier = GlanceModifier.defaultWeight().clickable(openApp)
-            )
-            Text(
-                text = "Open ↗",
-                style = TextStyle(color = GlanceTheme.colors.primary, fontSize = 13.sp),
-                modifier = GlanceModifier.padding(horizontal = 6.dp).clickable(openApp)
-            )
-        }
-
         // Column letters
         Row(modifier = GlanceModifier.background(GlanceTheme.colors.surfaceVariant)) {
-            HeaderCell("", ROW_HEADER_W)
             for (c in 0 until cols) {
-                Spacer(GlanceModifier.width(GAP))
+                if (c > 0) Spacer(GlanceModifier.width(GAP))
                 HeaderCell(SheetStore.colName(c), cellW)
             }
         }
@@ -117,9 +92,8 @@ private fun SheetContent() {
                         .background(GlanceTheme.colors.surfaceVariant)
                         .padding(top = GAP)
                 ) {
-                    HeaderCell((r + 1).toString(), ROW_HEADER_W)
                     for (c in 0 until cols) {
-                        Spacer(GlanceModifier.width(GAP))
+                        if (c > 0) Spacer(GlanceModifier.width(GAP))
                         val value = cells[r * SheetStore.COLS + c] ?: ""
                         Text(
                             text = value,
