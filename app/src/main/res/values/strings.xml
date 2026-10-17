@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">FoldSheet</string>
+    <string name="widget_description">Editable spreadsheet. Tap a cell to edit it.</string>
+</resources>
