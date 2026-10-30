@@ -56,6 +56,8 @@ class BlurOverlay(context: Context) {
     private var interp: TimeInterpolator = DecelerateInterpolator()
     private var onDone: (() -> Unit)? = null
     private var running = false
+    private var frames = 0
+    private var peak = 0f
 
     private val frame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -83,7 +85,7 @@ class BlurOverlay(context: Context) {
 
     /** Ramp up to full blur and stay there until [release]. */
     fun hold() {
-        if (!Settings.canDrawOverlays(ctx)) return
+        if (!Settings.canDrawOverlays(ctx)) { Diag.log("no overlay permission"); return }
         if (!attach()) return
         animateTo(1f, settings.fadeInMs, easeIn, null)
         // Never leave a blur on screen if something goes wrong.
@@ -97,6 +99,12 @@ class BlurOverlay(context: Context) {
         val v = view ?: return
         v.removeCallbacks(safety)
         animateTo(0f, settings.fadeOutMs, easeOut) { detach() }
+    }
+
+    /** Diagnostic: full strength for [ms], then fade out. */
+    fun test(ms: Long) {
+        hold()
+        view?.postDelayed({ release() }, ms)
     }
 
     fun dismissNow() {
@@ -124,12 +132,15 @@ class BlurOverlay(context: Context) {
     private fun apply(v: Float) {
         level = v
         val vw = view ?: return
+        frames++
+        if (v > peak) peak = v
         lp.blurBehindRadius = (settings.blurPx * v).roundToInt()
         val a = (255 * settings.dim * v).roundToInt().coerceIn(0, 255)
         vw.setBackgroundColor(Color.argb(a, 0, 0, 0))
         try {
             wm.updateViewLayout(vw, lp)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Diag.log("update failed: ${e.javaClass.simpleName}: ${e.message}")
             view = null // window was torn down by the system; start fresh next time
         }
     }
@@ -142,8 +153,12 @@ class BlurOverlay(context: Context) {
             wm.addView(v, lp)
             view = v
             level = 0f
+            frames = 0
+            peak = 0f
+            Diag.log("layer added (system blur ${if (wm.isCrossWindowBlurEnabled) "on" else "OFF"})")
             true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Diag.log("addView failed: ${e.javaClass.simpleName}: ${e.message}")
             false
         }
     }
@@ -152,6 +167,8 @@ class BlurOverlay(context: Context) {
         val v = view ?: return
         view = null
         v.removeCallbacks(safety)
+        Diag.log("layer removed: $frames frames, peak ${(peak * 100).roundToInt()}%, " +
+            "attached=${v.isAttachedToWindow} shown=${v.isShown} ${v.width}x${v.height}")
         try { wm.removeViewImmediate(v) } catch (_: Exception) {}
     }
 

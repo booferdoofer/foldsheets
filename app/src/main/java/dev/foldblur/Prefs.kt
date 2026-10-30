@@ -23,10 +23,10 @@ object Prefs {
 
     fun load(c: Context): BlurSettings = sp(c).let {
         BlurSettings(
-            blurPx = it.getInt(K_BLUR, 70),
+            blurPx = it.getInt(K_BLUR, 70).coerceIn(0, 150),
             fadeInMs = 90L,
-            fadeOutMs = it.getInt(K_FADE_OUT, 320).toLong(),
-            dim = it.getInt(K_DIM, 12) / 100f,
+            fadeOutMs = it.getInt(K_FADE_OUT, 320).coerceIn(150, 600).toLong(),
+            dim = it.getInt(K_DIM, 12).coerceIn(0, 40) / 100f,
             hingePreBlur = it.getBoolean(K_HINGE, true),
         )
     }
@@ -35,4 +35,19 @@ object Prefs {
     fun setEnabled(c: Context, v: Boolean) = sp(c).edit().putBoolean(K_ENABLED, v).apply()
     fun putInt(c: Context, k: String, v: Int) = sp(c).edit().putInt(k, v).apply()
     fun putBool(c: Context, k: String, v: Boolean) = sp(c).edit().putBoolean(k, v).apply()
+}
+
+/** On-screen event log so problems are visible without a computer. */
+object Diag {
+    private val lines = ArrayDeque<String>()
+    var listener: (() -> Unit)? = null
+    private val fmt = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
+
+    fun log(s: String) {
+        lines.addFirst("${fmt.format(java.util.Date())}  $s")
+        while (lines.size > 12) lines.removeLast()
+        listener?.invoke()
+    }
+
+    fun text() = lines.joinToString("\n")
 }

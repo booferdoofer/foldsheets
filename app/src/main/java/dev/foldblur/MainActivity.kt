@@ -29,6 +29,9 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var overlay: BlurOverlay
     private lateinit var status: TextView
     private lateinit var live: TextView
+    private lateinit var diag: TextView
+    private var hingeEvents = 0
+    private val blurListener = java.util.function.Consumer<Boolean> { runOnUiThread { refresh() } }
     private lateinit var sensors: SensorManager
     private var lastAngle = Float.NaN
 
@@ -75,6 +78,20 @@ class MainActivity : Activity(), SensorEventListener {
         col.addView(slider("Depth dim", 0, 40, (s.dim * 100).roundToInt(), "%") { Prefs.putInt(this, Prefs.K_DIM, it) })
 
         col.addView(button("Preview transition") { preview() })
+        col.addView(button("Test: hold layer for 2 seconds") {
+            if (!Settings.canDrawOverlays(this)) return@button
+            val cur = Prefs.load(this)
+            // force a clearly visible tint so we can tell if the layer appears at all
+            overlay.configure(cur.copy(dim = maxOf(cur.dim, 0.35f), blurPx = maxOf(cur.blurPx, 80)))
+            overlay.test(2000)
+        })
+        col.addView(button("Open Accessibility settings") {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        })
+        col.addView(text("\nEvent log", 16f, bold = true))
+        diag = text("", 12f).also { col.addView(it) }
+        diag.setTypeface(Typeface.MONOSPACE)
+        Diag.listener = { runOnUiThread { diag.text = Diag.text() } }
     }
 
     override fun onResume() {
@@ -84,15 +101,18 @@ class MainActivity : Activity(), SensorEventListener {
             sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
         }
         if (Prefs.isEnabled(this) && Settings.canDrawOverlays(this)) FoldBlurService.start(this)
+        getSystemService(WindowManager::class.java).addCrossWindowBlurEnabledListener(mainExecutor, blurListener)
+        diag.text = Diag.text()
         updateLive()
     }
 
     override fun onPause() {
         sensors.unregisterListener(this)
+        getSystemService(WindowManager::class.java).removeCrossWindowBlurEnabledListener(blurListener)
         super.onPause()
     }
 
-    override fun onSensorChanged(e: SensorEvent) { lastAngle = e.values[0]; updateLive() }
+    override fun onSensorChanged(e: SensorEvent) { lastAngle = e.values[0]; hingeEvents++; updateLive() }
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     private fun preview() {
@@ -101,6 +121,7 @@ class MainActivity : Activity(), SensorEventListener {
             return
         }
         overlay.configure(Prefs.load(this))
+        Diag.log("preview tapped")
         overlay.hold()
         window.decorView.postDelayed({ overlay.release() }, 220)
     }
@@ -119,10 +140,11 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun updateLive() {
+        if (!::live.isInitialized) return
         val m = getSystemService(android.hardware.display.DisplayManager::class.java)
             .getDisplay(Display.DEFAULT_DISPLAY)?.mode
         val angle = if (lastAngle.isNaN()) "—" else "${lastAngle.roundToInt()}°"
-        live.text = "Hinge: $angle    Panel: ${m?.physicalWidth}×${m?.physicalHeight}\n"
+        live.text = "Hinge: $angle ($hingeEvents updates)    Panel: ${m?.physicalWidth}×${m?.physicalHeight}\n"
     }
 
     // --- tiny view helpers (no extra libraries) ---

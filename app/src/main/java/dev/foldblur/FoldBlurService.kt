@@ -50,6 +50,7 @@ class FoldBlurService : Service(), SensorEventListener {
             if (displayId != Display.DEFAULT_DISPLAY) return
             val k = currentPanelKey()
             if (k != panelKey) {          // physical panel changed = fold handoff
+                Diag.log("screen switch detected")
                 panelKey = k              // (rotation alone doesn't change this)
                 trigger(HOLD_AFTER_SWAP_MS)
             }
@@ -68,6 +69,7 @@ class FoldBlurService : Service(), SensorEventListener {
     override fun onCreate() {
         super.onCreate()
         startAsForeground()
+        Diag.log("listener started")
         overlay = BlurOverlay(this)
         sensors = getSystemService(SensorManager::class.java)
         displays = getSystemService(DisplayManager::class.java)
@@ -89,6 +91,7 @@ class FoldBlurService : Service(), SensorEventListener {
     }
 
     override fun onDestroy() {
+        Diag.log("listener stopped")
         stopListening()
         try { unregisterReceiver(screenReceiver) } catch (_: Exception) {}
         overlay.dismissNow()
@@ -120,7 +123,10 @@ class FoldBlurService : Service(), SensorEventListener {
         if (anchorAngle.isNaN()) { anchorAngle = a; return }
         if (abs(a - anchorAngle) >= MOVE_THRESHOLD_DEG) {
             anchorAngle = a
-            if (settings.hingePreBlur) trigger(HOLD_AFTER_HINGE_MS)
+            if (settings.hingePreBlur) {
+                if (!overlay.isShowing) Diag.log("hinge moving (${a.toInt()}°)")
+                trigger(HOLD_AFTER_HINGE_MS)
+            }
         }
     }
 
