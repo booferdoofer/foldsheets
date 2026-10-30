@@ -70,6 +70,37 @@ class FoldBlurService : Service(), SensorEventListener {
     private var rv: Sensor? = null
     private val calibrating get() = calRun?.active == true
 
+    // Health watch: counts sensor readings so the log shows if Android stops sending them
+    // when the app is in the background, and keeps the blur logic running on a timer.
+    private val counts = IntArray(4)     // compass, orientation, hinge feed polls, coarse hinge
+    private var lastFeedPolls = 0L
+    private var lastHealth = ""
+    private var tickN = 0
+    private val tick = object : Runnable {
+        override fun run() {
+            if (!listening) return
+            updatePosition()
+            if (++tickN % 40 == 0) healthCheck()          // every ~2 s
+            main.postDelayed(this, 50)
+        }
+    }
+
+    private fun healthCheck() {
+        val st = android.app.ActivityManager.RunningAppProcessInfo()
+        android.app.ActivityManager.getMyMemoryState(st)
+        val imp = when {
+            st.importance <= android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND -> "app on screen"
+            st.importance <= android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE -> "background (service)"
+            else -> "background (importance ${st.importance})"
+        }
+        val polls = ExactAngle.lastPollMs
+        val feed = if (ExactAngle.isLive) "live" else ExactAngle.status
+        val h = "$imp | compass ${if (counts[0] > 0) "ok" else "STOPPED"}, orientation ${if (counts[1] > 0) "ok" else "STOPPED"}, hinge feed $feed"
+        if (h != lastHealth) { Diag.log("status: $h"); lastHealth = h }
+        counts.fill(0)
+        lastFeedPolls = polls
+    }
+
     private fun updatePosition() {
         val nowCfg = SystemClock.uptimeMillis()
         if (nowCfg - lastCfgMs > 1500) {           // pick up setting changes from the app
@@ -254,6 +285,8 @@ class FoldBlurService : Service(), SensorEventListener {
         displays.registerDisplayListener(displayListener, main)
         mag?.let { sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME, main) }
         rv?.let { sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME, main) }
+        main.removeCallbacks(tick)
+        main.postDelayed(tick, 50)
         val results = (listOfNotNull(hinge) + extraSensors).map {
             val ok = sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, main)
             "${it.name.take(16)}=${if (ok) "ok" else "REFUSED"}"
@@ -269,6 +302,7 @@ class FoldBlurService : Service(), SensorEventListener {
         main.removeCallbacks(settle)
         main.removeCallbacks(midWatch)
         stopGyro()
+        main.removeCallbacks(tick)
         cal.rotValid = false
         cal.resetEarth()
         calRun?.cancel(); calRun = null
@@ -382,6 +416,7 @@ class FoldBlurService : Service(), SensorEventListener {
     }
 
     private fun onMag(v: FloatArray) {
+        counts[0]++
         val now = SystemClock.uptimeMillis()
         magNow[0] = v[0]; magNow[1] = v[1]; magNow[2] = v[2]
         // how fast the field is changing over the last ~200 ms
@@ -465,6 +500,7 @@ class FoldBlurService : Service(), SensorEventListener {
 
     override fun onSensorChanged(e: SensorEvent) {
         if (e.sensor == rv) {
+            counts[1]++
             SensorManager.getRotationMatrixFromVector(cal.rot, e.values)
             cal.rotValid = true
             return
