@@ -35,7 +35,13 @@ object ExactAngle {
     private var loggedRaw = false
 
     private const val CMD =
-        "while true; do dumpsys sensorservice | grep -F -A 14 'Folding Angle'; echo @@END; sleep 0.1; done"
+        "while true; do dumpsys sensorservice | grep -F -A 51 'Folding Angle  Non-wakeup: last'; echo @@END; sleep 0.03; done"
+
+    /** Called on the main thread after each poll with the timestamps (seconds since boot) of Samsung's hinge readings. */
+    var onEvents: ((DoubleArray) -> Unit)? = null
+    @Volatile var pollMs = 0L; private set          // average time between polls
+    private var wanted = false
+    private var appCtx: Context? = null
 
     // ---------- pairing ----------
 
@@ -130,6 +136,8 @@ object ExactAngle {
     // ---------- live feed ----------
 
     fun start(ctx: Context) {
+        wanted = true
+        appCtx = ctx.applicationContext
         if (running) return
         running = true
         status = "connecting…"
@@ -140,16 +148,25 @@ object ExactAngle {
                 val s = m.openStream("shell:$CMD")
                 stream = s
                 status = "live"
-                main.post { Diag.log("exact angle feed started") }
+                main.post { Diag.log("hinge feed started") }
                 val reader = s.openInputStream().bufferedReader()
                 val chunk = ArrayList<String>()
+                var polls = 0
+                val firstPoll = SystemClock.uptimeMillis()
                 while (running) {
                     val line = reader.readLine() ?: break
                     if (line.trim() == "@@END") {
                         lastPollMs = SystemClock.uptimeMillis()
+                        polls++
+                        pollMs = (lastPollMs - firstPoll) / polls
+                        status = "live (checks every ${pollMs} ms)"
+                        if (polls == 30) main.post { Diag.log("hinge feed checks every ${pollMs} ms") }
+                        val stamps = chunk.mapNotNull { l -> tsRe.find(l)?.groupValues?.get(1)?.toDoubleOrNull() }
+                            .toDoubleArray()
+                        if (stamps.isNotEmpty()) main.post { onEvents?.invoke(stamps) }
                         if (!loggedRaw) {
                             loggedRaw = true
-                            val raw = chunk.joinToString("\n").take(5000)
+                            val raw = chunk.take(6).joinToString("\n")
                             main.post { Diag.log("first exact report:\n$raw") }
                         }
                         parse(chunk)?.let { (ts, a) ->
@@ -172,11 +189,15 @@ object ExactAngle {
                 running = false
                 runCatching { stream?.close() }
                 stream = null
+                // Reconnect automatically (e.g. after a test command interrupted the connection).
+                val c = appCtx
+                if (wanted && c != null) main.postDelayed({ if (wanted) start(c) }, 3000)
             }
         }.apply { isDaemon = true; name = "exact-angle"; start() }
     }
 
     fun stop() {
+        wanted = false
         running = false
         runCatching { stream?.close() }
         pollThread?.interrupt()

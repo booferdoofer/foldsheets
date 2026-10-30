@@ -88,7 +88,7 @@ class MainActivity : Activity(), SensorEventListener {
         col.addView(slider("Depth dim", 0, 40, (s.dim * 100).roundToInt(), "%") { Prefs.putInt(this, Prefs.K_DIM, it) })
 
         // ---- Exact hinge angle through Wireless debugging ----
-        col.addView(text("\nExact hinge angle (Wireless debugging)", 18f, bold = true))
+        col.addView(text("\nSamsung hinge motion (Wireless debugging)", 18f, bold = true))
         exactStatus = text("", 14f).also { col.addView(it) }
         col.addView(text("1. Tap \"Start pairing\" (allow notifications).\n" +
             "2. In Developer options → Wireless debugging, turn it on, then tap \"Pair device with pairing code\".\n" +
@@ -105,7 +105,7 @@ class MainActivity : Activity(), SensorEventListener {
             lastTest = "Testing… (Wireless debugging must be on)"
             ExactAngle.test(this) { r -> lastTest = r }
         })
-        col.addView(button("Start / restart live exact angle") {
+        col.addView(button("Start / restart hinge feed") {
             ExactAngle.stop()
             Prefs.putBool(this, Prefs.K_EXACT, true)
             ExactAngle.start(this)
@@ -211,7 +211,6 @@ class MainActivity : Activity(), SensorEventListener {
         val paired = Prefs.isPaired(this)
         val a = ExactAngle.angle
         exactStatus.text = "Paired: ${if (paired) "yes" else "no"}   Feed: ${ExactAngle.status}" +
-            (if (ExactAngle.isLive && !a.isNaN()) "   Exact angle: ${"%.1f".format(a)}°" else "") +
             (if (lastTest.isNotEmpty()) "\nTest: $lastTest" else "")
     }
 

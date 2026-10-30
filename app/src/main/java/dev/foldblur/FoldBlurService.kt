@@ -58,6 +58,11 @@ class FoldBlurService : Service(), SensorEventListener {
 
     private val midWatch = Runnable { checkMid() }
 
+    // Samsung hinge motion, from the timestamps of its Folding Angle readings (values are hidden).
+    private var lastHingeTs = 0.0
+    private var lastHingeMotionMs = 0L
+    private val feedLive get() = ExactAngle.isLive
+
     // Fold-test recorder: logs the compass (magnetometer) against the hinge so we can
     // see whether the magnets in the other half give a usable exact angle.
     private var mag: Sensor? = null
@@ -107,7 +112,8 @@ class FoldBlurService : Service(), SensorEventListener {
                 panelKey = k              // (rotation alone doesn't change this)
                 if (folding) {
                     trail.append(" [switch]")
-                    if (fineSeen || ExactAngle.isLive) keepBlurred(SETTLE_FINE_MID_MS)
+                    if (feedLive) overlay.hold()       // the hinge-motion watch decides when to clear
+                    else if (fineSeen) keepBlurred(SETTLE_FINE_MID_MS)
                     else if (!gyroOn) keepBlurred(HOLD_AFTER_SWAP_MS)
                     // else: the gyro watch is already deciding when the fold has stopped
                 } else {
@@ -158,6 +164,7 @@ class FoldBlurService : Service(), SensorEventListener {
         else registerReceiver(screenReceiver, f)
 
         ExactAngle.onAngle = { onExact(it) }
+        ExactAngle.onEvents = { onHingeEvents(it) }
         if (getSystemService(PowerManager::class.java).isInteractive) {
             startListening()
             startExactIfPaired()
@@ -178,6 +185,7 @@ class FoldBlurService : Service(), SensorEventListener {
         Diag.log("listener stopped")
         ExactAngle.stop()
         ExactAngle.onAngle = null
+        ExactAngle.onEvents = null
         stopListening()
         try { unregisterReceiver(screenReceiver) } catch (_: Exception) {}
         overlay.dismissNow()
@@ -230,8 +238,11 @@ class FoldBlurService : Service(), SensorEventListener {
         if (!folding) return
         val now = SystemClock.uptimeMillis()
         val inMid = now - midSinceMs
-        val quiet = now - maxOf(lastGyroActiveMs, lastMagActiveMs)
-        if ((inMid >= MIN_MID_MS && quiet >= GYRO_QUIET_MS) || inMid >= MAX_MID_MS) {
+        val live = feedLive
+        val quiet = if (live) now - lastHingeMotionMs else now - maxOf(lastGyroActiveMs, lastMagActiveMs)
+        val minHold = if (live) MIN_HOLD_LIVE_MS else MIN_MID_MS
+        val quietNeeded = if (live) HINGE_QUIET_MS + ExactAngle.pollMs else GYRO_QUIET_MS
+        if ((inMid >= minHold && quiet >= quietNeeded) || inMid >= MAX_MID_MS) {
             trail.append(if (inMid >= MAX_MID_MS) " [max]" else " [stopped]")
             stopGyro()
             main.removeCallbacks(settle)
@@ -240,6 +251,36 @@ class FoldBlurService : Service(), SensorEventListener {
             overlay.hold()
             main.postDelayed(midWatch, 50)
         }
+    }
+
+    private fun onHingeEvents(ts: DoubleArray) {
+        if (!listening || recording || ts.isEmpty()) return
+        val newest = ts.max()
+        if (newest <= lastHingeTs) return
+        lastHingeTs = newest
+        // Real movement = a burst of readings (~every 40 ms); a single reading is just jitter.
+        val burst = ts.count { newest - it <= 0.25 }
+        if (burst < 3) return
+        val nowS = SystemClock.elapsedRealtimeNanos() / 1e9
+        val ageMs = ((nowS - newest) * 1000).toLong().coerceAtLeast(0)
+        if (ageMs > 600) return
+        lastHingeMotionMs = SystemClock.uptimeMillis() - ageMs
+        if (!settings.hingePreBlur) return
+        if (!folding) {
+            folding = true
+            gestureStartMs = System.currentTimeMillis()
+            trail.setLength(0)
+            trail.append("hinge moving (${ageMs} ms late) from ").append(coarseAngle.toInt())
+            trailAngle = coarseAngle
+            trailEst = Float.NaN
+            settings = Prefs.load(this)
+            overlay.configure(settings)
+            midSinceMs = SystemClock.uptimeMillis()
+        }
+        overlay.hold()
+        main.removeCallbacks(settle)
+        main.removeCallbacks(midWatch)
+        main.postDelayed(midWatch, 50)
     }
 
     private fun startRec() {
@@ -379,7 +420,11 @@ class FoldBlurService : Service(), SensorEventListener {
         if (isFine) fineSeen = true
         if (!isFine && !isCoarse) return
         // Once the precise sensor is working, the 90°-step one is only used for the log.
-        if (isCoarse && (fineSeen || ExactAngle.isLive)) return
+        if (isCoarse && ExactAngle.isLive) {
+            if (folding) trail.append(" [${e.values[0].toInt()}]")
+            return
+        }
+        if (isCoarse && fineSeen) return
         handleAngle(e.values[0], isFine)
     }
 
@@ -413,6 +458,13 @@ class FoldBlurService : Service(), SensorEventListener {
         }
         val atRest = a <= CLOSED_DEG || a >= OPEN_DEG
         when {
+            feedLive -> {                              // Samsung hinge motion decides when it stops
+                if (midSinceMs == 0L || !folding) midSinceMs = SystemClock.uptimeMillis()
+                overlay.hold()
+                main.removeCallbacks(settle)
+                main.removeCallbacks(midWatch)
+                main.postDelayed(midWatch, 50)
+            }
             atRest -> {                                // fully open/closed: focus soon
                 stopGyro()
                 main.removeCallbacks(midWatch)
@@ -484,6 +536,8 @@ class FoldBlurService : Service(), SensorEventListener {
         private const val GYRO_MOVING_RAD_S = 0.5f   // faster than this = still folding
         private const val MAG_MOVING_PER_S = 25f      // compass change rate that means "still folding"
         private const val GYRO_QUIET_MS = 250L       // no motion for this long = stopped
+        private const val HINGE_QUIET_MS = 120L      // no Samsung hinge readings for this long = stopped
+        private const val MIN_HOLD_LIVE_MS = 250L
         private const val MIN_MID_MS = 600L          // always hold at least this long part-way
         private const val MAX_MID_MS = 3000L         // never hold longer than this part-way
         private const val HOLD_AFTER_SWAP_MS = 250L  // switch with no hinge readings at all
