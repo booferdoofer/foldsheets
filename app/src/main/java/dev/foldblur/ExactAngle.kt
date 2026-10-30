@@ -78,33 +78,53 @@ object ExactAngle {
 
     // ---------- one-off test ----------
 
+    /** Runs a shell command over Wireless debugging and returns its output, giving up after [timeoutMs]. */
+    private fun run(m: AdbManager, cmd: String, timeoutMs: Long = 6000, cap: Int = 3000): String {
+        val s = m.openStream("shell:$cmd")
+        val out = StringBuffer()
+        val t = Thread {
+            try {
+                val r = s.openInputStream().bufferedReader()
+                while (true) {
+                    val line = r.readLine() ?: break
+                    if (out.length < cap) out.append(line).append('\n')
+                }
+            } catch (_: Throwable) {}
+        }.apply { isDaemon = true; start() }
+        t.join(timeoutMs)
+        runCatching { s.close() }
+        return out.toString().ifBlank { "(no output)\n" }
+    }
+
     fun test(ctx: Context, done: (String) -> Unit) {
-        worker.execute {
+        Diag.log("exact angle test started…")
+        Thread {
             val report = try {
                 val m = connect(ctx)
-                val text = m.openStream("shell:dumpsys sensorservice").use { s ->
-                    s.openInputStream().bufferedReader().readText()
+                val checks = listOf(
+                    "shell permissions" to "dumpsys package com.android.shell | grep -i -E 'SSENSOR|SENSORHUB'",
+                    "shell identity" to "id",
+                    "Folding Angle in report" to "dumpsys sensorservice | grep -n -i -A5 'folding angle'",
+                    "recent events section" to "dumpsys sensorservice | grep -n -i -A4 'recent sensor events'",
+                    "display hinge info" to "dumpsys display | grep -i -E 'hinge|angle|fold' | head -15",
+                    "window hinge info" to "dumpsys window | grep -i -E 'hinge|fold.*angle|angle' | head -15",
+                    "device state" to "dumpsys device_state | head -20",
+                )
+                val out = StringBuilder("EXACT ANGLE TEST v2\n")
+                for ((label, cmd) in checks) {
+                    out.append("== ").append(label).append(" ==\n")
+                    out.append(runCatching { run(m, cmd) }.getOrElse { "failed: ${it.message}\n" })
                 }
-                val lines = text.lines()
-                val out = StringBuilder("EXACT ANGLE TEST: report ${text.length} chars\n")
-                lines.forEachIndexed { i, l ->
-                    if (l.contains("Folding Angle", true) || l.contains("folding_angle", true) ||
-                        l.contains("lid_angle", true)) {
-                        out.append("[$i] ").append(l.trim().take(160)).append('\n')
-                        var j = i + 1
-                        while (j < lines.size && j <= i + 12 && lines[j].contains("ts=")) {
-                            out.append("    ").append(lines[j].trim().take(160)).append('\n'); j++
-                        }
-                    }
-                }
-                val parsed = parse(lines)
-                out.append(if (parsed != null) "→ latest exact angle: ${"%.2f".format(parsed.second)}°" else "→ no Folding Angle readings found in the report")
+                val full = runCatching { run(m, "dumpsys sensorservice", 8000, 400_000) }.getOrDefault("")
+                val parsed = parse(full.lines())
+                out.append(if (parsed != null) "→ latest exact angle: ${"%.2f".format(parsed.second)}°"
+                    else "→ no Folding Angle readings in the report")
                 out.toString()
             } catch (e: Throwable) {
                 "EXACT ANGLE TEST failed: ${e.message ?: e.javaClass.simpleName}"
             }
             main.post { Diag.log(report); done(report.lineSequence().last()) }
-        }
+        }.apply { isDaemon = true; start() }
     }
 
     // ---------- live feed ----------
@@ -129,7 +149,7 @@ object ExactAngle {
                         lastPollMs = SystemClock.uptimeMillis()
                         if (!loggedRaw) {
                             loggedRaw = true
-                            val raw = chunk.joinToString("\n").take(1500)
+                            val raw = chunk.joinToString("\n").take(5000)
                             main.post { Diag.log("first exact report:\n$raw") }
                         }
                         parse(chunk)?.let { (ts, a) ->

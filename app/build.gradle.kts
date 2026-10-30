@@ -11,10 +11,23 @@ android {
         applicationId = "dev.foldblur"
         minSdk = 31          // window blur APIs need Android 12+
         targetSdk = 35
-        versionCode = 12
-        versionName = "1.2.0"
+        versionCode = 13
+        versionName = "1.3.0"
     }
 
+
+    // Fixed signing key so updates install over the old version and keep the pairing.
+    signingConfigs {
+        create("fixed") {
+            storeFile = file("foldblur.keystore")
+            storePassword = "foldblur"
+            keyAlias = "foldblur"
+            keyPassword = "foldblur"
+        }
+    }
+    buildTypes {
+        getByName("debug") { signingConfig = signingConfigs.getByName("fixed") }
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
