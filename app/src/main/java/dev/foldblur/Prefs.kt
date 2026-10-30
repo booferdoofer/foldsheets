@@ -25,7 +25,7 @@ object Prefs {
         BlurSettings(
             blurPx = it.getInt(K_BLUR, 70).coerceIn(0, 150),
             fadeInMs = 90L,
-            fadeOutMs = it.getInt(K_FADE_OUT, 320).coerceIn(150, 600).toLong(),
+            fadeOutMs = it.getInt(K_FADE_OUT, 450).coerceIn(150, 600).toLong(),
             dim = it.getInt(K_DIM, 12).coerceIn(0, 40) / 100f,
             hingePreBlur = it.getBoolean(K_HINGE, true),
         )
@@ -45,7 +45,7 @@ object Diag {
 
     fun log(s: String) {
         lines.addFirst("${fmt.format(java.util.Date())}  $s")
-        while (lines.size > 12) lines.removeLast()
+        while (lines.size > 30) lines.removeLast()
         listener?.invoke()
     }
 

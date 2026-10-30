@@ -92,7 +92,13 @@ class MainActivity : Activity(), SensorEventListener {
         diag = text("", 12f).also { col.addView(it) }
         diag.setTypeface(Typeface.MONOSPACE)
         Diag.listener = { runOnUiThread { diag.text = Diag.text() } }
-        if (savedInstanceState == null) Diag.log(SamsungBlur.probe())
+        if (savedInstanceState == null) {
+            Diag.log(SamsungBlur.probe())
+            val hs = sensors.getSensorList(Sensor.TYPE_ALL).filter { s ->
+                listOf("hinge", "fold", "angle", "hall").any { s.name.contains(it, true) || s.stringType.contains(it, true) }
+            }
+            Diag.log("hinge-type sensors: " + hs.joinToString("; ") { "${it.name} (${it.stringType}, step ${it.resolution}, ${it.minDelay}us)" })
+        }
     }
 
     override fun onResume() {
