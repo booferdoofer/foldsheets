@@ -73,6 +73,20 @@ class FoldBlurService : Service(), SensorEventListener {
     private val lastGyro = FloatArray(3)
     private val lastSubGyro = FloatArray(3)
     private val recCounts = IntArray(5)
+
+    // Compass-based fold estimate: the magnets in the other half shift the magnetometer
+    // reading as the phone folds. We learn what "open" and "closed" look like and
+    // place the current reading between them.
+    private val magNow = FloatArray(3)
+    private val magHistT = LongArray(16)
+    private val magHist = Array(16) { FloatArray(3) }
+    private var magHistN = 0
+    private var magOpen: FloatArray? = null
+    private var magClosed: FloatArray? = null
+    private var lastMagActiveMs = 0L
+    private var coarseAngle = 180f
+    private var estAngle = Float.NaN
+    private var trailEst = Float.NaN
     private val recSample = Runnable { sampleRec() }
     private val recStop = Runnable { stopRec() }
     private var panelKey = 0L
@@ -168,6 +182,7 @@ class FoldBlurService : Service(), SensorEventListener {
         panelKey = currentPanelKey()
         anchorAngle = Float.NaN
         displays.registerDisplayListener(displayListener, main)
+        mag?.let { sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_UI, main) }
         val results = (listOfNotNull(hinge) + extraSensors).map {
             val ok = sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, main)
             "${it.name.take(16)}=${if (ok) "ok" else "REFUSED"}"
@@ -204,7 +219,7 @@ class FoldBlurService : Service(), SensorEventListener {
         if (!folding) return
         val now = SystemClock.uptimeMillis()
         val inMid = now - midSinceMs
-        val quiet = now - lastGyroActiveMs
+        val quiet = now - maxOf(lastGyroActiveMs, lastMagActiveMs)
         if ((inMid >= MIN_MID_MS && quiet >= GYRO_QUIET_MS) || inMid >= MAX_MID_MS) {
             trail.append(if (inMid >= MAX_MID_MS) " [max]" else " [stopped]")
             stopGyro()
@@ -251,10 +266,59 @@ class FoldBlurService : Service(), SensorEventListener {
         if (!recording) return
         recording = false
         main.removeCallbacks(recSample)
-        listOfNotNull(acc, subAcc, subGyro, mag).forEach { sensors.unregisterListener(this, it) }
+        listOfNotNull(acc, subAcc, subGyro).forEach { sensors.unregisterListener(this, it) }
         gyro?.let { sensors.unregisterListener(this, it) }
         rec.append("events: acc=${recCounts[0]} subAcc=${recCounts[1]} gyro=${recCounts[2]} subGyro=${recCounts[3]} mag=${recCounts[4]}")
         Diag.log(rec.toString())
+    }
+
+    private fun onMag(v: FloatArray) {
+        val now = SystemClock.uptimeMillis()
+        magNow[0] = v[0]; magNow[1] = v[1]; magNow[2] = v[2]
+        // how fast the field is changing over the last ~200 ms
+        val i = magHistN % magHist.size
+        magHistT[i] = now; v.copyInto(magHist[i], 0, 0, 3); magHistN++
+        var speed = 0f
+        for (k in 1 until minOf(magHistN, magHist.size)) {
+            val j = ((magHistN - 1 - k) % magHist.size + magHist.size) % magHist.size
+            val dt = now - magHistT[j]
+            if (dt >= 180) { speed = dist(magNow, magHist[j]) * 1000f / dt; break }
+        }
+        if (speed >= MAG_MOVING_PER_S) lastMagActiveMs = now
+        val steady = now - lastMagActiveMs > 600
+
+        // learn the open / closed fingerprints while the phone sits still in that state
+        if (steady && coarseAngle >= OPEN_DEG) magOpen = ema(magOpen, magNow)
+        if (steady && coarseAngle <= CLOSED_DEG) magClosed = ema(magClosed, magNow)
+
+        val o = magOpen
+        estAngle = when {
+            coarseAngle >= OPEN_DEG && !folding -> 180f
+            coarseAngle <= CLOSED_DEG && !folding -> 0f
+            o == null -> coarseAngle
+            else -> {
+                val span = magClosed?.let { dist(it, o) }?.coerceAtLeast(30f) ?: 85f
+                val frac = (dist(magNow, o) / span).coerceIn(0f, 1f)
+                (180f * (1f - Math.pow(frac.toDouble(), 1.5).toFloat())).coerceIn(0f, 180f)
+            }
+        }
+        Live.estAngle = estAngle
+        Live.note = if (o == null) "learning open position" else if (magClosed == null) "learning closed position" else "calibrated"
+        if (folding && (trailEst.isNaN() || abs(estAngle - trailEst) >= 25f)) {
+            trail.append(" ~").append(estAngle.toInt())
+            trailEst = estAngle
+        }
+    }
+
+    private fun dist(a: FloatArray, b: FloatArray): Float {
+        val x = a[0] - b[0]; val y = a[1] - b[1]; val z = a[2] - b[2]
+        return kotlin.math.sqrt(x * x + y * y + z * z)
+    }
+
+    private fun ema(old: FloatArray?, v: FloatArray): FloatArray {
+        if (old == null) return v.copyOf()
+        for (k in 0..2) old[k] += 0.05f * (v[k] - old[k])
+        return old
     }
 
     private fun startGyro() {
@@ -285,6 +349,8 @@ class FoldBlurService : Service(), SensorEventListener {
                 return
             }
         }
+        if (e.sensor == mag) { onMag(e.values); return }
+        if (e.sensor == hinge) coarseAngle = e.values[0]
         if (recording && e.sensor == hinge) { anchorAngle = e.values[0]; return }
         if (e.sensor == gyro) {
             val v = e.values
@@ -317,6 +383,7 @@ class FoldBlurService : Service(), SensorEventListener {
             trail.setLength(0)
             trail.append(if (isFine) "angle " else "hinge ").append(prev.toInt())
             trailAngle = prev
+            trailEst = Float.NaN
             settings = Prefs.load(this)
             overlay.configure(settings)
         }
@@ -395,6 +462,7 @@ class FoldBlurService : Service(), SensorEventListener {
         private const val FINE_THRESHOLD_DEG = 1.5f  // ignore jitter on the precise sensor
         private const val SETTLE_FINE_MID_MS = 400L  // precise sensor still for this long = stopped
         private const val GYRO_MOVING_RAD_S = 0.5f   // faster than this = still folding
+        private const val MAG_MOVING_PER_S = 25f      // compass change rate that means "still folding"
         private const val GYRO_QUIET_MS = 250L       // no motion for this long = stopped
         private const val MIN_MID_MS = 600L          // always hold at least this long part-way
         private const val MAX_MID_MS = 3000L         // never hold longer than this part-way

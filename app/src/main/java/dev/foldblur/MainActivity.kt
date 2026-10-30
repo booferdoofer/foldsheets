@@ -36,6 +36,9 @@ class MainActivity : Activity(), SensorEventListener {
     private val blurListener = java.util.function.Consumer<Boolean> { runOnUiThread { refresh() } }
     private lateinit var sensors: SensorManager
     private var lastAngle = Float.NaN
+    private val ticker = object : Runnable {
+        override fun run() { updateLive(); live.postDelayed(this, 150) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -132,10 +135,11 @@ class MainActivity : Activity(), SensorEventListener {
         if (Prefs.isEnabled(this) && Settings.canDrawOverlays(this)) FoldBlurService.start(this)
         getSystemService(WindowManager::class.java).addCrossWindowBlurEnabledListener(mainExecutor, blurListener)
         diag.text = Diag.text()
-        updateLive()
+        live.post(ticker)
     }
 
     override fun onPause() {
+        live.removeCallbacks(ticker)
         sensors.unregisterListener(this)
         getSystemService(WindowManager::class.java).removeCrossWindowBlurEnabledListener(blurListener)
         super.onPause()
@@ -179,7 +183,9 @@ class MainActivity : Activity(), SensorEventListener {
         val m = getSystemService(android.hardware.display.DisplayManager::class.java)
             .getDisplay(Display.DEFAULT_DISPLAY)?.mode
         val angle = if (lastAngle.isNaN()) "—" else "${lastAngle.roundToInt()}°"
-        live.text = "Hinge: $angle ($hingeEvents updates)    Panel: ${m?.physicalWidth}×${m?.physicalHeight}\n" +
+        val est = Live.estAngle
+        live.text = "Estimated angle: ${if (est.isNaN()) "— (turn on Enabled)" else "~${est.roundToInt()}°"}  ${Live.note}\n" +
+            "Hinge: $angle ($hingeEvents updates)    Panel: ${m?.physicalWidth}×${m?.physicalHeight}\n" +
             liveValues.entries.joinToString("\n") { "• ${it.key}: ${it.value}" } + "\n"
     }
 

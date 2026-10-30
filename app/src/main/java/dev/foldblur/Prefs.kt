@@ -51,3 +51,9 @@ object Diag {
 
     fun text() = lines.joinToString("\n")
 }
+
+/** Live values the service publishes for the app screen. */
+object Live {
+    @Volatile var estAngle = Float.NaN
+    @Volatile var note = ""
+}
