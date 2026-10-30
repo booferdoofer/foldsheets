@@ -65,6 +65,14 @@ class FoldBlurService : Service(), SensorEventListener {
     private var recStartMs = 0L
     private val rec = StringBuilder()
     private val lastMag = FloatArray(3)
+    private var acc: Sensor? = null
+    private var subAcc: Sensor? = null
+    private var subGyro: Sensor? = null
+    private val lastAcc = FloatArray(3)
+    private val lastSubAcc = FloatArray(3)
+    private val lastGyro = FloatArray(3)
+    private val lastSubGyro = FloatArray(3)
+    private val recCounts = IntArray(5)
     private val recSample = Runnable { sampleRec() }
     private val recStop = Runnable { stopRec() }
     private var panelKey = 0L
@@ -114,6 +122,10 @@ class FoldBlurService : Service(), SensorEventListener {
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         mag = sensors.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD_UNCALIBRATED)
             ?: sensors.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
+        acc = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        val all = sensors.getSensorList(Sensor.TYPE_ALL)
+        subAcc = all.firstOrNull { it.name.contains("Accelerometer-Sub", true) && !it.name.contains("Uncal", true) }
+        subGyro = all.firstOrNull { it.name.contains("Gyroscope-Sub", true) && !it.name.contains("Uncal", true) }
         // Any other sensor that might report hinge/fold position (Samsung vendor sensors).
         sensors.getSensorList(Sensor.TYPE_ALL).filter { s ->
             s != hinge && listOf("hinge", "fold", "angle", "hall").any {
@@ -206,34 +218,43 @@ class FoldBlurService : Service(), SensorEventListener {
 
     private fun startRec() {
         if (recording) return
-        val m = mag ?: run { Diag.log("no magnetometer"); return }
         recording = true
         overlay.dismissNow()
+        stopGyro()
+        recCounts.fill(0)
         rec.setLength(0)
-        rec.append("FOLD TEST (${m.name}, uncal=${m.type == Sensor.TYPE_MAGNETIC_FIELD_UNCALIBRATED})\n")
-        rec.append("ms hinge  x  y  z  |B|\n")
-        sensors.registerListener(this, m, SensorManager.SENSOR_DELAY_GAME, main)
+        val list = listOf("acc" to acc, "subAcc" to subAcc, "gyro" to gyro, "subGyro" to subGyro, "mag" to mag)
+        val reg = list.joinToString(", ") { (k, sn) ->
+            if (sn == null) "$k=missing"
+            else "$k=${if (sensors.registerListener(this, sn, SensorManager.SENSOR_DELAY_GAME, main)) "ok" else "REFUSED"}(${sn.name.take(30)}, type ${sn.type})"
+        }
+        rec.append("FOLD TEST v2: $reg\n")
+        rec.append("ms hinge | acc x y z | subAcc x y z | gyro x y z | subGyro x y z | mag x y z\n")
         recStartMs = SystemClock.uptimeMillis()
-        Diag.log("fold test recording for 8 s…")
+        Diag.log("fold test recording for 10 s…")
         main.postDelayed(recSample, 300)
-        main.postDelayed(recStop, 8000)
+        main.postDelayed(recStop, 10_000)
     }
+
+    private fun f1(a: FloatArray) = a.joinToString(" ") { String.format("%.1f", it) }
+    private fun f2(a: FloatArray) = a.joinToString(" ") { String.format("%.2f", it) }
 
     private fun sampleRec() {
         if (!recording) return
-        val (x, y, z) = Triple(lastMag[0], lastMag[1], lastMag[2])
-        val b = kotlin.math.sqrt(x * x + y * y + z * z)
-        rec.append("${SystemClock.uptimeMillis() - recStartMs} ${if (anchorAngle.isNaN()) "?" else anchorAngle.toInt().toString()} " +
-            "${x.toInt()} ${y.toInt()} ${z.toInt()} ${b.toInt()}\n")
-        main.postDelayed(recSample, 125)
+        val h = if (anchorAngle.isNaN()) "?" else anchorAngle.toInt().toString()
+        rec.append("${SystemClock.uptimeMillis() - recStartMs} $h | ${f1(lastAcc)} | ${f1(lastSubAcc)} | " +
+            "${f2(lastGyro)} | ${f2(lastSubGyro)} | ${lastMag.joinToString(" ") { it.toInt().toString() }}\n")
+        main.postDelayed(recSample, 50)
     }
 
     private fun stopRec() {
         if (!recording) return
         recording = false
         main.removeCallbacks(recSample)
-        mag?.let { sensors.unregisterListener(this, it) }
-        Diag.log(rec.toString().trimEnd())
+        listOfNotNull(acc, subAcc, subGyro, mag).forEach { sensors.unregisterListener(this, it) }
+        gyro?.let { sensors.unregisterListener(this, it) }
+        rec.append("events: acc=${recCounts[0]} subAcc=${recCounts[1]} gyro=${recCounts[2]} subGyro=${recCounts[3]} mag=${recCounts[4]}")
+        Diag.log(rec.toString())
     }
 
     private fun startGyro() {
@@ -250,9 +271,19 @@ class FoldBlurService : Service(), SensorEventListener {
     }
 
     override fun onSensorChanged(e: SensorEvent) {
-        if (e.sensor == mag) {
-            lastMag[0] = e.values[0]; lastMag[1] = e.values[1]; lastMag[2] = e.values[2]
-            return
+        if (recording) {
+            val target = when (e.sensor) {
+                mag -> { recCounts[4]++; lastMag }
+                acc -> { recCounts[0]++; lastAcc }
+                subAcc -> { recCounts[1]++; lastSubAcc }
+                gyro -> { recCounts[2]++; lastGyro }
+                subGyro -> { recCounts[3]++; lastSubGyro }
+                else -> null
+            }
+            if (target != null) {
+                target[0] = e.values[0]; target[1] = e.values[1]; target[2] = e.values[2]
+                return
+            }
         }
         if (recording && e.sensor == hinge) { anchorAngle = e.values[0]; return }
         if (e.sensor == gyro) {

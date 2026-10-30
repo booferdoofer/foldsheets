@@ -87,13 +87,13 @@ class MainActivity : Activity(), SensorEventListener {
             overlay.configure(cur.copy(dim = maxOf(cur.dim, 0.35f), blurPx = maxOf(cur.blurPx, 80)))
             overlay.test(2000)
         })
-        col.addView(button("Record fold test (8 s)") {
+        col.addView(button("Record fold test (10 s)") {
             if (!Prefs.isEnabled(this)) {
                 Toast.makeText(this, "Turn on Enabled first", Toast.LENGTH_SHORT).show()
                 return@button
             }
             FoldBlurService.record(this)
-            Toast.makeText(this, "Recording 8 s: slowly close fully, then slowly open fully", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Recording 10 s: close slowly, open slowly, close fast, open fast", Toast.LENGTH_LONG).show()
         })
         col.addView(button("Open Accessibility settings") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
