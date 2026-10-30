@@ -19,6 +19,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.view.Display
 import kotlin.math.abs
 
@@ -46,13 +47,43 @@ class FoldBlurService : Service(), SensorEventListener {
     private var fineSeen = false             // it has actually delivered readings
     private var trailAngle = Float.NaN
     private val firstSeen = mutableSetOf<String>()
+
+    // Gyroscope: only switched on while the hinge reads "in between" (90°), to tell
+    // whether the phone is still being folded or has stopped.
+    private var gyro: Sensor? = null
+    private var gyroOn = false
+    private var midSinceMs = 0L
+    private var lastGyroActiveMs = 0L
+    private var gyroPeak = 0f
+
+    private val midWatch = object : Runnable {
+        override fun run() {
+            if (!folding) return
+            val now = SystemClock.uptimeMillis()
+            val inMid = now - midSinceMs
+            val quiet = now - lastGyroActiveMs
+            if ((inMid >= MIN_MID_MS && quiet >= GYRO_QUIET_MS) || inMid >= MAX_MID_MS) {
+                trail.append(if (inMid >= MAX_MID_MS) " [max]" else " [stopped]")
+                stopGyro()
+                main.removeCallbacks(settle)
+                settle.run()
+            } else {
+                overlay.hold()
+                main.postDelayed(this, 50)
+            }
+        }
+    }
     private var panelKey = 0L
     private var settings = BlurSettings(70, 90, 320, 0.12f, true)
 
     /** Called once the hinge has stopped moving: bring the screen into focus. */
     private val settle = Runnable {
         if (folding) {
-            Diag.log("$trail  (${System.currentTimeMillis() - gestureStartMs} ms)")
+            Diag.log("$trail  (${System.currentTimeMillis() - gestureStartMs} ms" +
+                (if (gyroPeak > 0f) ", gyro peak ${"%.1f".format(gyroPeak)}" else "") + ")")
+            gyroPeak = 0f
+            stopGyro()
+            main.removeCallbacks(midWatch)
             folding = false
         }
         overlay.release()
@@ -69,7 +100,9 @@ class FoldBlurService : Service(), SensorEventListener {
                 panelKey = k              // (rotation alone doesn't change this)
                 if (folding) {
                     trail.append(" [switch]")
-                    keepBlurred(if (fineSeen) SETTLE_FINE_MID_MS else SETTLE_COARSE_MID_MS)
+                    if (fineSeen) keepBlurred(SETTLE_FINE_MID_MS)
+                    else if (!gyroOn) keepBlurred(HOLD_AFTER_SWAP_MS)
+                    // else: the gyro watch is already deciding when the fold has stopped
                 } else {
                     trigger(HOLD_AFTER_SWAP_MS)
                 }
@@ -94,6 +127,7 @@ class FoldBlurService : Service(), SensorEventListener {
         sensors = getSystemService(SensorManager::class.java)
         displays = getSystemService(DisplayManager::class.java)
         hinge = sensors.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE)
+        gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         // Any other sensor that might report hinge/fold position (Samsung vendor sensors).
         sensors.getSensorList(Sensor.TYPE_ALL).filter { s ->
             s != hinge && listOf("hinge", "fold", "angle", "hall").any {
@@ -148,10 +182,30 @@ class FoldBlurService : Service(), SensorEventListener {
         displays.unregisterDisplayListener(displayListener)
         sensors.unregisterListener(this)
         main.removeCallbacks(settle)
+        main.removeCallbacks(midWatch)
+        stopGyro()
         folding = false
     }
 
+    private fun startGyro() {
+        if (gyroOn) return
+        gyro?.let { gyroOn = sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME, main) }
+    }
+
+    private fun stopGyro() {
+        if (!gyroOn) return
+        gyroOn = false
+        gyro?.let { sensors.unregisterListener(this, it) }
+    }
+
     override fun onSensorChanged(e: SensorEvent) {
+        if (e.sensor == gyro) {
+            val v = e.values
+            val speed = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])  // rad/s
+            if (speed > gyroPeak) gyroPeak = speed
+            if (speed >= GYRO_MOVING_RAD_S) lastGyroActiveMs = SystemClock.uptimeMillis()
+            return
+        }
         val name = e.sensor.name
         if (firstSeen.add(name)) {
             Diag.log("first reading from $name: " + e.values.take(4).joinToString("/") { "%.1f".format(it) })
@@ -184,13 +238,24 @@ class FoldBlurService : Service(), SensorEventListener {
             trailAngle = a
         }
         val atRest = a <= CLOSED_DEG || a >= OPEN_DEG
-        keepBlurred(
-            when {
-                atRest -> SETTLE_AT_REST_MS            // fully open/closed: focus soon
-                isFine -> SETTLE_FINE_MID_MS           // precise sensor went quiet part-way = stopped
-                else -> SETTLE_COARSE_MID_MS           // 90° steps: wait for the next step
+        when {
+            atRest -> {                                // fully open/closed: focus soon
+                stopGyro()
+                main.removeCallbacks(midWatch)
+                keepBlurred(SETTLE_AT_REST_MS)
             }
-        )
+            isFine -> keepBlurred(SETTLE_FINE_MID_MS)  // precise sensor went quiet part-way = stopped
+            else -> {                                  // "somewhere in between": watch the motion
+                val now = SystemClock.uptimeMillis()
+                midSinceMs = now
+                lastGyroActiveMs = now
+                startGyro()
+                overlay.hold()
+                main.removeCallbacks(settle)
+                main.removeCallbacks(midWatch)
+                main.postDelayed(midWatch, 50)
+            }
+        }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -242,7 +307,10 @@ class FoldBlurService : Service(), SensorEventListener {
         private const val SETTLE_AT_REST_MS = 200L   // after reaching open/closed, then focus
         private const val FINE_THRESHOLD_DEG = 1.5f  // ignore jitter on the precise sensor
         private const val SETTLE_FINE_MID_MS = 400L  // precise sensor still for this long = stopped
-        private const val SETTLE_COARSE_MID_MS = 2000L // coarse sensor: hold up to 2 s for next step
+        private const val GYRO_MOVING_RAD_S = 0.5f   // faster than this = still folding
+        private const val GYRO_QUIET_MS = 250L       // no motion for this long = stopped
+        private const val MIN_MID_MS = 600L          // always hold at least this long part-way
+        private const val MAX_MID_MS = 3000L         // never hold longer than this part-way
         private const val HOLD_AFTER_SWAP_MS = 250L  // switch with no hinge readings at all
 
         fun start(c: Context) =

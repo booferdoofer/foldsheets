@@ -99,6 +99,7 @@ class MainActivity : Activity(), SensorEventListener {
             val hs = sensors.getSensorList(Sensor.TYPE_ALL).filter { s ->
                 listOf("hinge", "fold", "angle", "hall").any { s.name.contains(it, true) || s.stringType.contains(it, true) }
             }
+            Diag.log("all sensors: " + sensors.getSensorList(Sensor.TYPE_ALL).joinToString(", ") { it.name })
             Diag.log("hinge-type sensors: " + hs.joinToString("; ") { "${it.name} (${it.stringType}, step ${it.resolution}, ${it.minDelay}us)" })
         }
     }

@@ -192,6 +192,6 @@ class BlurOverlay(context: Context) {
     }
 
     companion object {
-        private const val SAFETY_MS = 4000L
+        private const val SAFETY_MS = 5000L
     }
 }
