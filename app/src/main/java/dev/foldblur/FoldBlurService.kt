@@ -65,6 +65,10 @@ class FoldBlurService : Service(), SensorEventListener {
     private fun blurRelease() { if (!positionMode) overlay.release() }
 
     private var lastCfgMs = 0L
+    private lateinit var cal: FoldCal
+    private var calRun: CalibrationRun? = null
+    private var rv: Sensor? = null
+    private val calibrating get() = calRun?.active == true
 
     private fun updatePosition() {
         val nowCfg = SystemClock.uptimeMillis()
@@ -73,6 +77,7 @@ class FoldBlurService : Service(), SensorEventListener {
             settings = Prefs.load(this)
             overlay.configure(settings)
         }
+        if (calibrating) { overlay.setTarget(0f); return }
         if (!positionMode || recording || !listening) return
         if (!settings.hingePreBlur) { overlay.setTarget(0f); return }
         val now = SystemClock.uptimeMillis()
@@ -180,6 +185,8 @@ class FoldBlurService : Service(), SensorEventListener {
         displays = getSystemService(DisplayManager::class.java)
         hinge = sensors.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE)
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        rv = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
+        cal = FoldCal(this)
         mag = sensors.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD_UNCALIBRATED)
             ?: sensors.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
         acc = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -213,6 +220,11 @@ class FoldBlurService : Service(), SensorEventListener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         settings = Prefs.load(this)
         if (intent?.action == ACTION_RECORD) startRec()
+        if (intent?.action == ACTION_CALIBRATE && calRun?.active != true) {
+            overlay.dismissNow()
+            calRun = CalibrationRun(this, cal) { calRun = null }.also { it.start() }
+        }
+        if (intent?.action == ACTION_RESET_CAL) { cal.clear(); Diag.log("calibration cleared") }
         return START_STICKY
     }
 
@@ -241,6 +253,7 @@ class FoldBlurService : Service(), SensorEventListener {
         anchorAngle = Float.NaN
         displays.registerDisplayListener(displayListener, main)
         mag?.let { sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME, main) }
+        rv?.let { sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME, main) }
         val results = (listOfNotNull(hinge) + extraSensors).map {
             val ok = sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, main)
             "${it.name.take(16)}=${if (ok) "ok" else "REFUSED"}"
@@ -256,6 +269,9 @@ class FoldBlurService : Service(), SensorEventListener {
         main.removeCallbacks(settle)
         main.removeCallbacks(midWatch)
         stopGyro()
+        cal.rotValid = false
+        cal.resetEarth()
+        calRun?.cancel(); calRun = null
         if (recording) stopRec()
         folding = false
     }
@@ -384,10 +400,23 @@ class FoldBlurService : Service(), SensorEventListener {
         if (steady && coarseAngle >= OPEN_DEG) magOpen = ema(magOpen, magNow)
         if (steady && coarseAngle <= CLOSED_DEG) magClosed = ema(magClosed, magNow)
 
+        calRun?.let { if (it.active) { it.onMag(magNow); return } }
+
         val o = magOpen
+        val calAngle = if (cal.isCalibrated) {
+            if (!folding && now - lastMovingMs > 800) cal.learnEarth(magNow, coarseAngle)
+            cal.angle(magNow).let { a ->
+                if (a.isNaN()) a else when {
+                    coarseAngle >= OPEN_DEG -> a.coerceAtLeast(130f)
+                    coarseAngle <= CLOSED_DEG -> a.coerceAtMost(50f)
+                    else -> a.coerceIn(5f, 175f)
+                }
+            }
+        } else Float.NaN
         estAngle = when {
             coarseAngle >= OPEN_DEG && !folding -> 180f
             coarseAngle <= CLOSED_DEG && !folding -> 0f
+            !calAngle.isNaN() -> if (estAngle.isNaN()) calAngle else estAngle + 0.35f * (calAngle - estAngle)
             o == null -> coarseAngle
             else -> {
                 val span = magClosed?.let { dist(it, o) }?.coerceAtLeast(30f) ?: 85f
@@ -397,7 +426,13 @@ class FoldBlurService : Service(), SensorEventListener {
         }
         Live.estAngle = estAngle
         updatePosition()
-        Live.note = if (o == null) "learning open position" else if (magClosed == null) "learning closed position" else "calibrated"
+        Live.note = when {
+            cal.isCalibrated && cal.earthValid -> "your calibration, tilt-compensated"
+            cal.isCalibrated -> "your calibration (open the phone flat for a moment)"
+            o == null -> "auto: learning open position"
+            magClosed == null -> "auto: learning closed position"
+            else -> "auto-calibrated (tap Calibrate for better)"
+        }
         if (folding && (trailEst.isNaN() || abs(estAngle - trailEst) >= 25f)) {
             trail.append(" ~").append(estAngle.toInt())
             trailEst = estAngle
@@ -429,6 +464,11 @@ class FoldBlurService : Service(), SensorEventListener {
     }
 
     override fun onSensorChanged(e: SensorEvent) {
+        if (e.sensor == rv) {
+            SensorManager.getRotationMatrixFromVector(cal.rot, e.values)
+            cal.rotValid = true
+            return
+        }
         if (recording) {
             val target = when (e.sensor) {
                 mag -> { recCounts[4]++; lastMag }
@@ -586,6 +626,11 @@ class FoldBlurService : Service(), SensorEventListener {
         private const val HOLD_AFTER_SWAP_MS = 250L  // switch with no hinge readings at all
 
         const val ACTION_RECORD = "dev.foldblur.RECORD"
+        const val ACTION_CALIBRATE = "dev.foldblur.CALIBRATE"
+        const val ACTION_RESET_CAL = "dev.foldblur.RESET_CAL"
+
+        fun action(c: Context, a: String) =
+            c.startForegroundService(Intent(c, FoldBlurService::class.java).setAction(a))
 
         fun record(c: Context) =
             c.startForegroundService(Intent(c, FoldBlurService::class.java).setAction(ACTION_RECORD))

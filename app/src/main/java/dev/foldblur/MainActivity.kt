@@ -80,6 +80,18 @@ class MainActivity : Activity(), SensorEventListener {
         col.addView(toggle("Start blurring while the hinge moves", s.hingePreBlur) {
             Prefs.putBool(this, Prefs.K_HINGE, it)
         })
+        col.addView(text("\nAngle calibration", 18f, bold = true))
+        col.addView(text("Takes about 40 seconds. A voice tells you each position and the phone buzzes " +
+            "when it's measuring: fully open while turning it around, then ¾ open, L shape, ¼ open, closed. " +
+            "Turn your volume up.", 13f))
+        col.addView(button("Calibrate angle (guided, with voice)") {
+            if (!Prefs.isEnabled(this)) {
+                Toast.makeText(this, "Turn on Enabled first", Toast.LENGTH_SHORT).show(); return@button
+            }
+            FoldBlurService.action(this, FoldBlurService.ACTION_CALIBRATE)
+        })
+        col.addView(button("Reset calibration") { FoldBlurService.action(this, FoldBlurService.ACTION_RESET_CAL) })
+        col.addView(text("", 6f))
         col.addView(toggle("Blur follows fold position (holds when you pause)", s.followPosition) {
             Prefs.putBool(this, Prefs.K_POSITION, it)
         })
