@@ -57,6 +57,7 @@ class BlurOverlay(context: Context) {
     private var onDone: (() -> Unit)? = null
     private var running = false
     private var frames = 0
+    private var samsungMode = false
     private var peak = 0f
 
     private val frame = object : Choreographer.FrameCallback {
@@ -134,9 +135,14 @@ class BlurOverlay(context: Context) {
         val vw = view ?: return
         frames++
         if (v > peak) peak = v
-        lp.blurBehindRadius = (settings.blurPx * v).roundToInt()
-        val a = (255 * settings.dim * v).roundToInt().coerceIn(0, 255)
-        vw.setBackgroundColor(Color.argb(a, 0, 0, 0))
+        if (samsungMode) {
+            // Samsung blur is set once at full strength; fade the whole layer in/out.
+            lp.alpha = v
+        } else {
+            lp.blurBehindRadius = (settings.blurPx * v).roundToInt()
+            val a = (255 * settings.dim * v).roundToInt().coerceIn(0, 255)
+            vw.setBackgroundColor(Color.argb(a, 0, 0, 0))
+        }
         try {
             wm.updateViewLayout(vw, lp)
         } catch (e: Exception) {
@@ -150,12 +156,25 @@ class BlurOverlay(context: Context) {
         val v = View(ctx).apply { setBackgroundColor(Color.TRANSPARENT) }
         lp.blurBehindRadius = 0
         return try {
-            wm.addView(v, lp)
+            samsungMode = false
+            lp.alpha = 1f
+            val systemBlur = wm.isCrossWindowBlurEnabled
+            if (!systemBlur && settings.blurPx > 0) {
+                lp.alpha = 0f
+                val dimColor = Color.argb((255 * settings.dim).roundToInt().coerceIn(0, 255), 0, 0, 0)
+                wm.addView(v, lp)
+                val err = SamsungBlur.apply(v, settings.blurPx, dimColor)
+                samsungMode = err == null
+                if (!samsungMode) lp.alpha = 1f
+                Diag.log(if (samsungMode) "layer added (Samsung blur)" else "layer added (Samsung blur failed: $err)")
+            } else {
+                wm.addView(v, lp)
+                Diag.log("layer added (system blur ${if (systemBlur) "on" else "OFF"})")
+            }
             view = v
             level = 0f
             frames = 0
             peak = 0f
-            Diag.log("layer added (system blur ${if (wm.isCrossWindowBlurEnabled) "on" else "OFF"})")
             true
         } catch (e: Exception) {
             Diag.log("addView failed: ${e.javaClass.simpleName}: ${e.message}")

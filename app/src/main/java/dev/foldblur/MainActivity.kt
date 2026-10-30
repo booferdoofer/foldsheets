@@ -92,6 +92,7 @@ class MainActivity : Activity(), SensorEventListener {
         diag = text("", 12f).also { col.addView(it) }
         diag.setTypeface(Typeface.MONOSPACE)
         Diag.listener = { runOnUiThread { diag.text = Diag.text() } }
+        if (savedInstanceState == null) Diag.log(SamsungBlur.probe())
     }
 
     override fun onResume() {
