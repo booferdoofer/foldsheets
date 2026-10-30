@@ -65,6 +65,51 @@ class FoldBlurService : Service(), SensorEventListener {
     private fun blurRelease() { if (!positionMode) overlay.release() }
 
     private var lastCfgMs = 0L
+
+    // Screenshot animation (Accessibility): OFF -> CAPTURING -> SHOWING, or FALLBACK to live blur.
+    private enum class Snap { OFF, CAPTURING, SHOWING, FALLBACK }
+    private var snap = Snap.OFF
+    private var lastT = 0f
+
+    private fun driveSnap(t: Float) {
+        val svc = SnapService.instance
+        lastT = t
+        when (snap) {
+            Snap.OFF -> {
+                if (t <= 0.01f || svc == null) return
+                overlay.setTarget(0f)
+                if (svc.isShowing) {                       // previous fold still fading: reuse it
+                    snap = Snap.SHOWING; svc.setTarget(t)
+                } else if (svc.canCapture()) {
+                    snap = Snap.CAPTURING
+                    svc.configure(settings)
+                    svc.capture { b -> onSnap(b) }
+                } else {
+                    snap = Snap.FALLBACK; overlay.setTarget(t)
+                }
+            }
+            Snap.CAPTURING -> {}                            // screenshot on its way
+            Snap.SHOWING -> {
+                if (svc == null) { snap = Snap.OFF; return }
+                if (t <= 0.01f) { svc.release(); snap = Snap.OFF } else svc.setTarget(t)
+            }
+            Snap.FALLBACK -> {
+                overlay.setTarget(t)
+                if (t <= 0.01f) snap = Snap.OFF
+            }
+        }
+    }
+
+    private fun onSnap(b: android.graphics.Bitmap?) {
+        val svc = SnapService.instance
+        if (snap != Snap.CAPTURING) { b?.recycle(); return }
+        if (b == null || svc == null) { snap = Snap.FALLBACK; overlay.setTarget(lastT); return }
+        if (lastT <= 0.01f) { b.recycle(); snap = Snap.OFF; return }
+        svc.show(b, 0f)
+        svc.setTarget(lastT)
+        snap = Snap.SHOWING
+        if (folding) trail.append(" [screenshot ${Live.snapMs} ms]")
+    }
     private lateinit var cal: FoldCal
     private var calRun: CalibrationRun? = null
     private var rv: Sensor? = null
@@ -129,7 +174,8 @@ class FoldBlurService : Service(), SensorEventListener {
         }
         val clearMs = settings.partOpenClearMs
         if (clearMs > 0 && t > 0f && now - lastMovingMs > clearMs) t = 0f   // left part-open (e.g. Flex mode)
-        overlay.setTarget(t)
+        if ((settings.screenshotAnim && SnapService.instance != null) || snap != Snap.OFF) driveSnap(t)
+        else overlay.setTarget(t)
         Live.note2 = "blur ${(t * 100).toInt()}%${if (hingeMoving) ", hinge moving" else ""}"
     }
 
@@ -303,6 +349,8 @@ class FoldBlurService : Service(), SensorEventListener {
         main.removeCallbacks(midWatch)
         stopGyro()
         main.removeCallbacks(tick)
+        SnapService.instance?.dismiss()
+        snap = Snap.OFF
         cal.rotValid = false
         cal.resetEarth()
         calRun?.cancel(); calRun = null

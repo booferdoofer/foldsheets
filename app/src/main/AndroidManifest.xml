@@ -51,6 +51,19 @@
                 android:value="Draws a brief blur overlay while the device folds or unfolds" />
         </service>
 
+        <service
+            android:name=".SnapService"
+            android:exported="true"
+            android:label="Fold Blur animation"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/snap_service" />
+        </service>
+
         <receiver
             android:name=".PairingReceiver"
             android:exported="false" />

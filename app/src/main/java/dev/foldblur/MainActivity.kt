@@ -32,6 +32,7 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var diag: TextView
     private lateinit var exactStatus: TextView
     private var lastTest = ""
+    private lateinit var snapStatus: TextView
     private var hingeEvents = 0
     private val liveValues = linkedMapOf<String, String>()
     private val liveCounts = mutableMapOf<String, Int>()
@@ -80,6 +81,17 @@ class MainActivity : Activity(), SensorEventListener {
         col.addView(toggle("Start blurring while the hinge moves", s.hingePreBlur) {
             Prefs.putBool(this, Prefs.K_HINGE, it)
         })
+        col.addView(text("\nScreenshot animation (blur + zoom)", 18f, bold = true))
+        snapStatus = text("", 14f).also { col.addView(it) }
+        col.addView(text("Turn on \"Fold Blur\" under Installed apps in Accessibility. If Android says the " +
+            "setting is restricted: Settings → Apps → Fold Blur → ⋮ (top right) → Allow restricted settings, then try again.", 13f))
+        col.addView(button("Open Accessibility settings") {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        })
+        col.addView(toggle("Use screenshot animation when available", s.screenshotAnim) {
+            Prefs.putBool(this, Prefs.K_SNAP, it)
+        })
+        col.addView(slider("Zoom", 0, 20, s.zoomPct, "%") { Prefs.putInt(this, Prefs.K_ZOOM, it) })
         col.addView(text("\nAngle calibration", 18f, bold = true))
         col.addView(text("Takes about 40 seconds. A voice tells you each position and the phone buzzes " +
             "when it's measuring: fully open while turning it around, then ¾ open, L shape, ¼ open, closed. " +
@@ -226,6 +238,11 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun refreshExact() {
+        if (::snapStatus.isInitialized) {
+            snapStatus.text = if (SnapService.instance != null)
+                "Accessibility: on ✓" + (if (Live.snapMs > 0) "   last screenshot took ${Live.snapMs} ms" else "")
+            else "Accessibility: off (using live blur instead)"
+        }
         if (!::exactStatus.isInitialized) return
         val paired = Prefs.isPaired(this)
         val a = ExactAngle.angle

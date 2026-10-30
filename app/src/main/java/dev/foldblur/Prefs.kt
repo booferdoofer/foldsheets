@@ -12,6 +12,8 @@ data class BlurSettings(
     val smooth: Boolean = true,
     val followPosition: Boolean = true,
     val partOpenClearMs: Long = 5000,
+    val screenshotAnim: Boolean = true,
+    val zoomPct: Int = 8,
 )
 
 object Prefs {
@@ -23,6 +25,8 @@ object Prefs {
     const val K_SMOOTH = "smooth"
     const val K_POSITION = "follow_position"
     const val K_PARTOPEN = "partopen_s"
+    const val K_SNAP = "screenshot_anim"
+    const val K_ZOOM = "zoom_pct"
     const val K_PAIRED = "adb_paired"
     const val K_EXACT = "exact_enabled"
 
@@ -39,6 +43,8 @@ object Prefs {
             smooth = it.getBoolean(K_SMOOTH, false),
             followPosition = it.getBoolean(K_POSITION, true),
             partOpenClearMs = it.getInt(K_PARTOPEN, 5).let { s -> if (s >= 11) 0L else s * 1000L },
+            screenshotAnim = it.getBoolean(K_SNAP, true),
+            zoomPct = it.getInt(K_ZOOM, 8).coerceIn(0, 20),
         )
     }
 
@@ -70,4 +76,5 @@ object Live {
     @Volatile var estAngle = Float.NaN
     @Volatile var note = ""
     @Volatile var note2 = ""
+    @Volatile var snapMs = 0L
 }

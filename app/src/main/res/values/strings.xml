@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="snap_desc">Takes a screenshot when you start folding and animates it (blur and zoom) while the screens switch. Fold Blur does not read or store what is on your screen.</string>
+</resources>
