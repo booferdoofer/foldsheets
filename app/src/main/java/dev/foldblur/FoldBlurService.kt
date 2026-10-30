@@ -56,38 +56,12 @@ class FoldBlurService : Service(), SensorEventListener {
     private var lastGyroActiveMs = 0L
     private var gyroPeak = 0f
 
-    private val midWatch = object : Runnable {
-        override fun run() {
-            if (!folding) return
-            val now = SystemClock.uptimeMillis()
-            val inMid = now - midSinceMs
-            val quiet = now - lastGyroActiveMs
-            if ((inMid >= MIN_MID_MS && quiet >= GYRO_QUIET_MS) || inMid >= MAX_MID_MS) {
-                trail.append(if (inMid >= MAX_MID_MS) " [max]" else " [stopped]")
-                stopGyro()
-                main.removeCallbacks(settle)
-                settle.run()
-            } else {
-                overlay.hold()
-                main.postDelayed(this, 50)
-            }
-        }
-    }
+    private val midWatch = Runnable { checkMid() }
     private var panelKey = 0L
     private var settings = BlurSettings(70, 90, 320, 0.12f, true)
 
     /** Called once the hinge has stopped moving: bring the screen into focus. */
-    private val settle = Runnable {
-        if (folding) {
-            Diag.log("$trail  (${System.currentTimeMillis() - gestureStartMs} ms" +
-                (if (gyroPeak > 0f) ", gyro peak ${"%.1f".format(gyroPeak)}" else "") + ")")
-            gyroPeak = 0f
-            stopGyro()
-            main.removeCallbacks(midWatch)
-            folding = false
-        }
-        overlay.release()
-    }
+    private val settle = Runnable { finishGesture() }
 
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) {}
@@ -187,15 +161,46 @@ class FoldBlurService : Service(), SensorEventListener {
         folding = false
     }
 
+    private fun finishGesture() {
+        if (folding) {
+            val ms = System.currentTimeMillis() - gestureStartMs
+            val gyroNote = if (gyroPeak > 0f) ", gyro peak " + String.format("%.1f", gyroPeak) else ""
+            Diag.log("$trail  ($ms ms$gyroNote)")
+            gyroPeak = 0f
+            stopGyro()
+            main.removeCallbacks(midWatch)
+            folding = false
+        }
+        overlay.release()
+    }
+
+    private fun checkMid() {
+        if (!folding) return
+        val now = SystemClock.uptimeMillis()
+        val inMid = now - midSinceMs
+        val quiet = now - lastGyroActiveMs
+        if ((inMid >= MIN_MID_MS && quiet >= GYRO_QUIET_MS) || inMid >= MAX_MID_MS) {
+            trail.append(if (inMid >= MAX_MID_MS) " [max]" else " [stopped]")
+            stopGyro()
+            main.removeCallbacks(settle)
+            finishGesture()
+        } else {
+            overlay.hold()
+            main.postDelayed(midWatch, 50)
+        }
+    }
+
     private fun startGyro() {
         if (gyroOn) return
-        gyro?.let { gyroOn = sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME, main) }
+        val g = gyro ?: return
+        gyroOn = sensors.registerListener(this, g, SensorManager.SENSOR_DELAY_GAME, main)
     }
 
     private fun stopGyro() {
         if (!gyroOn) return
         gyroOn = false
-        gyro?.let { sensors.unregisterListener(this, it) }
+        val g = gyro ?: return
+        sensors.unregisterListener(this, g)
     }
 
     override fun onSensorChanged(e: SensorEvent) {
