@@ -9,6 +9,7 @@ data class BlurSettings(
     val fadeOutMs: Long,    // how long the new screen takes to come into focus
     val dim: Float,         // 0..1 extra darkening at peak, for depth
     val hingePreBlur: Boolean,
+    val smooth: Boolean = true,
 )
 
 object Prefs {
@@ -17,6 +18,7 @@ object Prefs {
     const val K_FADE_OUT = "fade_out"
     const val K_DIM = "dim"
     const val K_HINGE = "hinge"
+    const val K_SMOOTH = "smooth"
 
     private fun sp(c: Context): SharedPreferences =
         c.applicationContext.getSharedPreferences("cfg", Context.MODE_PRIVATE)
@@ -28,6 +30,7 @@ object Prefs {
             fadeOutMs = it.getInt(K_FADE_OUT, 450).coerceIn(150, 600).toLong(),
             dim = it.getInt(K_DIM, 12).coerceIn(0, 40) / 100f,
             hingePreBlur = it.getBoolean(K_HINGE, true),
+            smooth = it.getBoolean(K_SMOOTH, true),
         )
     }
 

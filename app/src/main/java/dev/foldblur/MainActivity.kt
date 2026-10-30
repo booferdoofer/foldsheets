@@ -78,6 +78,9 @@ class MainActivity : Activity(), SensorEventListener {
         col.addView(toggle("Start blurring while the hinge moves", s.hingePreBlur) {
             Prefs.putBool(this, Prefs.K_HINGE, it)
         })
+        col.addView(toggle("Smooth blur (animate blur strength)", s.smooth) {
+            Prefs.putBool(this, Prefs.K_SMOOTH, it)
+        })
         col.addView(slider("Blur strength", 0, 150, s.blurPx, "px") { Prefs.putInt(this, Prefs.K_BLUR, it) })
         col.addView(slider("Focus-in time", 150, 600, s.fadeOutMs.toInt(), "ms") { Prefs.putInt(this, Prefs.K_FADE_OUT, it) })
         col.addView(slider("Depth dim", 0, 40, (s.dim * 100).roundToInt(), "%") { Prefs.putInt(this, Prefs.K_DIM, it) })

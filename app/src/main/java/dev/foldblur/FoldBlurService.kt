@@ -102,7 +102,8 @@ class FoldBlurService : Service(), SensorEventListener {
             if (displayId != Display.DEFAULT_DISPLAY) return
             val k = currentPanelKey()
             if (k != panelKey) {          // physical panel changed = fold handoff
-                Diag.log("screen switch detected")
+                val locked = getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked
+                Diag.log("screen switch detected${if (locked) " (LOCK SCREEN showing: overlays hidden)" else ""}")
                 panelKey = k              // (rotation alone doesn't change this)
                 if (folding) {
                     trail.append(" [switch]")

@@ -58,6 +58,10 @@ class BlurOverlay(context: Context) {
     private var running = false
     private var frames = 0
     private var samsungMode = false
+    private var smoothMode = false   // animate Samsung blur strength in-app (no per-frame system calls)
+    private val radiusMethod = runCatching {
+        View::class.java.getMethod("semSetBlurRadius", Int::class.javaPrimitiveType)
+    }.getOrNull()
     private var peak = 0f
 
     private val frame = object : Choreographer.FrameCallback {
@@ -135,7 +139,19 @@ class BlurOverlay(context: Context) {
         val vw = view ?: return
         frames++
         if (v > peak) peak = v
-        if (samsungMode) {
+        if (smoothMode) {
+            // Change blur strength and dim directly on our view: rendered in-app, no window relayout.
+            try {
+                radiusMethod!!.invoke(vw, (settings.blurPx * v).roundToInt())
+                val a = (255 * settings.dim * v).roundToInt().coerceIn(0, 255)
+                vw.setBackgroundColor(Color.argb(a, 0, 0, 0))
+                return
+            } catch (e: Throwable) {
+                Diag.log("smooth blur failed, using fade: ${e.javaClass.simpleName}")
+                smoothMode = false
+                lp.alpha = v
+            }
+        } else if (samsungMode) {
             // Samsung blur is set once at full strength; fade the whole layer in/out.
             lp.alpha = v
         } else {
@@ -160,13 +176,28 @@ class BlurOverlay(context: Context) {
             lp.alpha = 1f
             val systemBlur = wm.isCrossWindowBlurEnabled
             if (!systemBlur && settings.blurPx > 0) {
-                lp.alpha = 0f
-                val dimColor = Color.argb((255 * settings.dim).roundToInt().coerceIn(0, 255), 0, 0, 0)
+                smoothMode = false
+                val wantSmooth = settings.smooth && radiusMethod != null
+                lp.alpha = if (wantSmooth) 1f else 0f
                 wm.addView(v, lp)
-                val err = SamsungBlur.apply(v, settings.blurPx, dimColor)
+                val err = applySamsung(v, wantSmooth)
                 samsungMode = err == null
+                smoothMode = samsungMode && wantSmooth
+                if (smoothMode) runCatching { radiusMethod!!.invoke(v, 0) }
                 if (!samsungMode) lp.alpha = 1f
-                Diag.log(if (samsungMode) "layer added (Samsung blur)" else "layer added (Samsung blur failed: $err)")
+                // Screen switches resize the layer; Samsung blur can be lost then, so put it back.
+                v.addOnLayoutChangeListener { lv, l, t, r, b, ol, ot, or, ob ->
+                    if (samsungMode && (r - l != or - ol || b - t != ob - ot) && or - ol > 0) {
+                        val e2 = applySamsung(lv, smoothMode)
+                        if (smoothMode) runCatching { radiusMethod!!.invoke(lv, (settings.blurPx * level).roundToInt()) }
+                        Diag.log(if (e2 == null) "blur re-applied after resize ${r - l}x${b - t}" else "blur re-apply failed: $e2")
+                    }
+                }
+                Diag.log(when {
+                    smoothMode -> "layer added (Samsung blur, smooth)"
+                    samsungMode -> "layer added (Samsung blur, fade)"
+                    else -> "layer added (Samsung blur failed: $err)"
+                })
             } else {
                 wm.addView(v, lp)
                 Diag.log("layer added (system blur ${if (systemBlur) "on" else "OFF"})")
@@ -180,6 +211,13 @@ class BlurOverlay(context: Context) {
             Diag.log("addView failed: ${e.javaClass.simpleName}: ${e.message}")
             false
         }
+    }
+
+    private fun applySamsung(v: View, smooth: Boolean): String? {
+        // In smooth mode the dim lives on the view background so it can fade with the blur.
+        val bg = if (smooth) Color.TRANSPARENT
+            else Color.argb((255 * settings.dim).roundToInt().coerceIn(0, 255), 0, 0, 0)
+        return SamsungBlur.apply(v, settings.blurPx, bg)
     }
 
     private fun detach() {
