@@ -92,6 +92,7 @@ class BlurOverlay(context: Context) {
     fun hold() {
         if (!Settings.canDrawOverlays(ctx)) { Diag.log("no overlay permission"); return }
         if (!attach()) return
+        if (tracking) { choreo.removeFrameCallback(trackFrame); tracking = false }
         animateTo(1f, settings.fadeInMs, easeIn, null)
         // Never leave a blur on screen if something goes wrong.
         val v = view ?: return
@@ -112,7 +113,51 @@ class BlurOverlay(context: Context) {
         view?.postDelayed({ release() }, ms)
     }
 
+    // ---- position tracking: blur level follows a target set many times a second ----
+    private var target = 0f
+    private var tracking = false
+    private var lastTrackNs = 0L
+    private val trackFrame = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            val dtMs = if (lastTrackNs == 0L) 16f else ((frameTimeNanos - lastTrackNs) / 1e6f).coerceIn(1f, 50f)
+            lastTrackNs = frameTimeNanos
+            // Quick to blur in, slower and softer to come back into focus.
+            val tau = if (target > level) settings.fadeInMs / 2f else settings.fadeOutMs / 3f
+            var next = level + (target - level) * (1f - kotlin.math.exp(-dtMs / tau.coerceAtLeast(10f)))
+            if (abs(target - next) < 0.003f) next = target
+            apply(next)
+            when {
+                target == 0f && next <= 0.003f -> { tracking = false; lastTrackNs = 0L; detach() }
+                next == target -> { tracking = false; lastTrackNs = 0L }
+                else -> choreo.postFrameCallback(this)
+            }
+        }
+    }
+
+    /** Smoothly move the blur toward [t] (0 = none, 1 = full). Call as often as you like. */
+    fun setTarget(t: Float) {
+        val nt = t.coerceIn(0f, 1f)
+        if (view == null) {
+            if (nt < 0.02f) return
+            if (!Settings.canDrawOverlays(ctx) || !attach()) return
+        }
+        // take over from any hold/release animation
+        if (running) { choreo.removeFrameCallback(frame); running = false; onDone = null }
+        target = nt
+        view?.let { it.removeCallbacks(safety); it.postDelayed(safety, SAFETY_MS) }
+        if (!tracking && level != target) {
+            tracking = true
+            lastTrackNs = 0L
+            choreo.postFrameCallback(trackFrame)
+        }
+    }
+
+    val currentLevel get() = level
+
     fun dismissNow() {
+        choreo.removeFrameCallback(trackFrame)
+        tracking = false
+        target = 0f
         choreo.removeFrameCallback(frame)
         running = false
         onDone = null

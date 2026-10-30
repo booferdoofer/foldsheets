@@ -58,6 +58,45 @@ class FoldBlurService : Service(), SensorEventListener {
 
     private val midWatch = Runnable { checkMid() }
 
+    // Position mode: blur strength follows how far the phone is from fully open/closed.
+    private val positionMode get() = settings.followPosition
+    private var lastMovingMs = 0L
+    private fun blurHold() { if (!positionMode) overlay.hold() }
+    private fun blurRelease() { if (!positionMode) overlay.release() }
+
+    private var lastCfgMs = 0L
+
+    private fun updatePosition() {
+        val nowCfg = SystemClock.uptimeMillis()
+        if (nowCfg - lastCfgMs > 1500) {           // pick up setting changes from the app
+            lastCfgMs = nowCfg
+            settings = Prefs.load(this)
+            overlay.configure(settings)
+        }
+        if (!positionMode || recording || !listening) return
+        if (!settings.hingePreBlur) { overlay.setTarget(0f); return }
+        val now = SystemClock.uptimeMillis()
+        val hingeMoving = feedLive && now - lastHingeMotionMs < 300
+        val c = coarseAngle
+        // Without Samsung's hinge feed, the 90° reading is the only reliable sign of a fold in progress.
+        val moving = hingeMoving || (!feedLive && c > CLOSED_DEG && c < OPEN_DEG &&
+            now - maxOf(lastMagActiveMs, lastGyroActiveMs) < 300)
+        if (moving) lastMovingMs = now
+        val restingOpenOrShut = (c >= OPEN_DEG || c <= CLOSED_DEG) && !hingeMoving && now - lastMovingMs > 250
+        val a = if (estAngle.isNaN()) c else estAngle
+        var t = if (restingOpenOrShut) 0f else {
+            val fromRest = (minOf(a, 180f - a) / RAMP_DEG).coerceIn(0f, 1f)
+            var x = fromRest * fromRest * (3f - 2f * fromRest)          // smoothstep
+            if (c > CLOSED_DEG && c < OPEN_DEG) x = maxOf(x, 0.4f)      // definitely part-way
+            if (hingeMoving) x = maxOf(x, 0.25f)                        // folding has started
+            x
+        }
+        val clearMs = settings.partOpenClearMs
+        if (clearMs > 0 && t > 0f && now - lastMovingMs > clearMs) t = 0f   // left part-open (e.g. Flex mode)
+        overlay.setTarget(t)
+        Live.note2 = "blur ${(t * 100).toInt()}%${if (hingeMoving) ", hinge moving" else ""}"
+    }
+
     // Samsung hinge motion, from the timestamps of its Folding Angle readings (values are hidden).
     private var lastHingeTs = 0.0
     private var lastHingeMotionMs = 0L
@@ -112,7 +151,7 @@ class FoldBlurService : Service(), SensorEventListener {
                 panelKey = k              // (rotation alone doesn't change this)
                 if (folding) {
                     trail.append(" [switch]")
-                    if (feedLive) overlay.hold()       // the hinge-motion watch decides when to clear
+                    if (feedLive) blurHold()       // the hinge-motion watch decides when to clear
                     else if (fineSeen) keepBlurred(SETTLE_FINE_MID_MS)
                     else if (!gyroOn) keepBlurred(HOLD_AFTER_SWAP_MS)
                     // else: the gyro watch is already deciding when the fold has stopped
@@ -201,7 +240,7 @@ class FoldBlurService : Service(), SensorEventListener {
         panelKey = currentPanelKey()
         anchorAngle = Float.NaN
         displays.registerDisplayListener(displayListener, main)
-        mag?.let { sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_UI, main) }
+        mag?.let { sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME, main) }
         val results = (listOfNotNull(hinge) + extraSensors).map {
             val ok = sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, main)
             "${it.name.take(16)}=${if (ok) "ok" else "REFUSED"}"
@@ -231,7 +270,7 @@ class FoldBlurService : Service(), SensorEventListener {
             main.removeCallbacks(midWatch)
             folding = false
         }
-        overlay.release()
+        blurRelease()
     }
 
     private fun checkMid() {
@@ -248,7 +287,7 @@ class FoldBlurService : Service(), SensorEventListener {
             main.removeCallbacks(settle)
             finishGesture()
         } else {
-            overlay.hold()
+            blurHold()
             main.postDelayed(midWatch, 50)
         }
     }
@@ -265,6 +304,8 @@ class FoldBlurService : Service(), SensorEventListener {
         val ageMs = ((nowS - newest) * 1000).toLong().coerceAtLeast(0)
         if (ageMs > 600) return
         lastHingeMotionMs = SystemClock.uptimeMillis() - ageMs
+        lastMovingMs = lastHingeMotionMs
+        updatePosition()
         if (!settings.hingePreBlur) return
         if (!folding) {
             folding = true
@@ -277,7 +318,7 @@ class FoldBlurService : Service(), SensorEventListener {
             overlay.configure(settings)
             midSinceMs = SystemClock.uptimeMillis()
         }
-        overlay.hold()
+        blurHold()
         main.removeCallbacks(settle)
         main.removeCallbacks(midWatch)
         main.postDelayed(midWatch, 50)
@@ -355,6 +396,7 @@ class FoldBlurService : Service(), SensorEventListener {
             }
         }
         Live.estAngle = estAngle
+        updatePosition()
         Live.note = if (o == null) "learning open position" else if (magClosed == null) "learning closed position" else "calibrated"
         if (folding && (trailEst.isNaN() || abs(estAngle - trailEst) >= 25f)) {
             trail.append(" ~").append(estAngle.toInt())
@@ -402,7 +444,7 @@ class FoldBlurService : Service(), SensorEventListener {
             }
         }
         if (e.sensor == mag) { onMag(e.values); return }
-        if (e.sensor == hinge) coarseAngle = e.values[0]
+        if (e.sensor == hinge) { coarseAngle = e.values[0]; updatePosition() }
         if (recording && e.sensor == hinge) { anchorAngle = e.values[0]; return }
         if (e.sensor == gyro) {
             val v = e.values
@@ -460,7 +502,7 @@ class FoldBlurService : Service(), SensorEventListener {
         when {
             feedLive -> {                              // Samsung hinge motion decides when it stops
                 if (midSinceMs == 0L || !folding) midSinceMs = SystemClock.uptimeMillis()
-                overlay.hold()
+                blurHold()
                 main.removeCallbacks(settle)
                 main.removeCallbacks(midWatch)
                 main.postDelayed(midWatch, 50)
@@ -476,7 +518,7 @@ class FoldBlurService : Service(), SensorEventListener {
                 midSinceMs = now
                 lastGyroActiveMs = now
                 startGyro()
-                overlay.hold()
+                blurHold()
                 main.removeCallbacks(settle)
                 main.removeCallbacks(midWatch)
                 main.postDelayed(midWatch, 50)
@@ -487,7 +529,7 @@ class FoldBlurService : Service(), SensorEventListener {
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     private fun keepBlurred(settleMs: Long) {
-        overlay.hold()
+        blurHold()
         main.removeCallbacks(settle)
         main.postDelayed(settle, settleMs)
     }
@@ -495,7 +537,7 @@ class FoldBlurService : Service(), SensorEventListener {
     private fun trigger(holdMs: Long) {
         settings = Prefs.load(this)
         overlay.configure(settings)
-        overlay.hold()
+        blurHold()
         main.removeCallbacks(settle)
         main.postDelayed(settle, holdMs)
     }
@@ -536,6 +578,7 @@ class FoldBlurService : Service(), SensorEventListener {
         private const val GYRO_MOVING_RAD_S = 0.5f   // faster than this = still folding
         private const val MAG_MOVING_PER_S = 25f      // compass change rate that means "still folding"
         private const val GYRO_QUIET_MS = 250L       // no motion for this long = stopped
+        private const val RAMP_DEG = 45f             // blur reaches full this far from open/closed
         private const val HINGE_QUIET_MS = 120L      // no Samsung hinge readings for this long = stopped
         private const val MIN_HOLD_LIVE_MS = 250L
         private const val MIN_MID_MS = 600L          // always hold at least this long part-way

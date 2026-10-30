@@ -10,6 +10,8 @@ data class BlurSettings(
     val dim: Float,         // 0..1 extra darkening at peak, for depth
     val hingePreBlur: Boolean,
     val smooth: Boolean = true,
+    val followPosition: Boolean = true,
+    val partOpenClearMs: Long = 5000,
 )
 
 object Prefs {
@@ -19,6 +21,8 @@ object Prefs {
     const val K_DIM = "dim"
     const val K_HINGE = "hinge"
     const val K_SMOOTH = "smooth"
+    const val K_POSITION = "follow_position"
+    const val K_PARTOPEN = "partopen_s"
     const val K_PAIRED = "adb_paired"
     const val K_EXACT = "exact_enabled"
 
@@ -33,6 +37,8 @@ object Prefs {
             dim = it.getInt(K_DIM, 12).coerceIn(0, 40) / 100f,
             hingePreBlur = it.getBoolean(K_HINGE, true),
             smooth = it.getBoolean(K_SMOOTH, false),
+            followPosition = it.getBoolean(K_POSITION, true),
+            partOpenClearMs = it.getInt(K_PARTOPEN, 5).let { s -> if (s >= 11) 0L else s * 1000L },
         )
     }
 
@@ -63,4 +69,5 @@ object Diag {
 object Live {
     @Volatile var estAngle = Float.NaN
     @Volatile var note = ""
+    @Volatile var note2 = ""
 }

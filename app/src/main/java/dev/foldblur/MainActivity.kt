@@ -80,6 +80,13 @@ class MainActivity : Activity(), SensorEventListener {
         col.addView(toggle("Start blurring while the hinge moves", s.hingePreBlur) {
             Prefs.putBool(this, Prefs.K_HINGE, it)
         })
+        col.addView(toggle("Blur follows fold position (holds when you pause)", s.followPosition) {
+            Prefs.putBool(this, Prefs.K_POSITION, it)
+        })
+        col.addView(slider("Clear if left part-open (11 = never)", 1, 11,
+            if (s.partOpenClearMs == 0L) 11 else (s.partOpenClearMs / 1000).toInt(), "s") {
+            Prefs.putInt(this, Prefs.K_PARTOPEN, it)
+        })
         col.addView(toggle("Smooth blur (animate blur strength)", s.smooth) {
             Prefs.putBool(this, Prefs.K_SMOOTH, it)
         })
@@ -222,6 +229,7 @@ class MainActivity : Activity(), SensorEventListener {
         refreshExact()
         val est = Live.estAngle
         live.text = "Estimated angle: ${if (est.isNaN()) "— (turn on Enabled)" else "~${est.roundToInt()}°"}  ${Live.note}\n" +
+            (if (Live.note2.isNotEmpty()) "Now: ${Live.note2}\n" else "") +
             "Hinge: $angle ($hingeEvents updates)    Panel: ${m?.physicalWidth}×${m?.physicalHeight}\n" +
             liveValues.entries.joinToString("\n") { "• ${it.key}: ${it.value}" } + "\n"
     }
