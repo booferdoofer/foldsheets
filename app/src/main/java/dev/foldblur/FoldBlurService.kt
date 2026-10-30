@@ -57,6 +57,16 @@ class FoldBlurService : Service(), SensorEventListener {
     private var gyroPeak = 0f
 
     private val midWatch = Runnable { checkMid() }
+
+    // Fold-test recorder: logs the compass (magnetometer) against the hinge so we can
+    // see whether the magnets in the other half give a usable exact angle.
+    private var mag: Sensor? = null
+    private var recording = false
+    private var recStartMs = 0L
+    private val rec = StringBuilder()
+    private val lastMag = FloatArray(3)
+    private val recSample = Runnable { sampleRec() }
+    private val recStop = Runnable { stopRec() }
     private var panelKey = 0L
     private var settings = BlurSettings(70, 90, 320, 0.12f, true)
 
@@ -102,6 +112,8 @@ class FoldBlurService : Service(), SensorEventListener {
         displays = getSystemService(DisplayManager::class.java)
         hinge = sensors.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE)
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        mag = sensors.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD_UNCALIBRATED)
+            ?: sensors.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
         // Any other sensor that might report hinge/fold position (Samsung vendor sensors).
         sensors.getSensorList(Sensor.TYPE_ALL).filter { s ->
             s != hinge && listOf("hinge", "fold", "angle", "hall").any {
@@ -123,6 +135,7 @@ class FoldBlurService : Service(), SensorEventListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         settings = Prefs.load(this)
+        if (intent?.action == ACTION_RECORD) startRec()
         return START_STICKY
     }
 
@@ -158,6 +171,7 @@ class FoldBlurService : Service(), SensorEventListener {
         main.removeCallbacks(settle)
         main.removeCallbacks(midWatch)
         stopGyro()
+        if (recording) stopRec()
         folding = false
     }
 
@@ -190,6 +204,38 @@ class FoldBlurService : Service(), SensorEventListener {
         }
     }
 
+    private fun startRec() {
+        if (recording) return
+        val m = mag ?: run { Diag.log("no magnetometer"); return }
+        recording = true
+        overlay.dismissNow()
+        rec.setLength(0)
+        rec.append("FOLD TEST (${m.name}, uncal=${m.type == Sensor.TYPE_MAGNETIC_FIELD_UNCALIBRATED})\n")
+        rec.append("ms hinge  x  y  z  |B|\n")
+        sensors.registerListener(this, m, SensorManager.SENSOR_DELAY_GAME, main)
+        recStartMs = SystemClock.uptimeMillis()
+        Diag.log("fold test recording for 8 s…")
+        main.postDelayed(recSample, 300)
+        main.postDelayed(recStop, 8000)
+    }
+
+    private fun sampleRec() {
+        if (!recording) return
+        val (x, y, z) = Triple(lastMag[0], lastMag[1], lastMag[2])
+        val b = kotlin.math.sqrt(x * x + y * y + z * z)
+        rec.append("${SystemClock.uptimeMillis() - recStartMs} ${if (anchorAngle.isNaN()) "?" else anchorAngle.toInt().toString()} " +
+            "${x.toInt()} ${y.toInt()} ${z.toInt()} ${b.toInt()}\n")
+        main.postDelayed(recSample, 125)
+    }
+
+    private fun stopRec() {
+        if (!recording) return
+        recording = false
+        main.removeCallbacks(recSample)
+        mag?.let { sensors.unregisterListener(this, it) }
+        Diag.log(rec.toString().trimEnd())
+    }
+
     private fun startGyro() {
         if (gyroOn) return
         val g = gyro ?: return
@@ -204,6 +250,11 @@ class FoldBlurService : Service(), SensorEventListener {
     }
 
     override fun onSensorChanged(e: SensorEvent) {
+        if (e.sensor == mag) {
+            lastMag[0] = e.values[0]; lastMag[1] = e.values[1]; lastMag[2] = e.values[2]
+            return
+        }
+        if (recording && e.sensor == hinge) { anchorAngle = e.values[0]; return }
         if (e.sensor == gyro) {
             val v = e.values
             val speed = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])  // rad/s
@@ -317,6 +368,11 @@ class FoldBlurService : Service(), SensorEventListener {
         private const val MIN_MID_MS = 600L          // always hold at least this long part-way
         private const val MAX_MID_MS = 3000L         // never hold longer than this part-way
         private const val HOLD_AFTER_SWAP_MS = 250L  // switch with no hinge readings at all
+
+        const val ACTION_RECORD = "dev.foldblur.RECORD"
+
+        fun record(c: Context) =
+            c.startForegroundService(Intent(c, FoldBlurService::class.java).setAction(ACTION_RECORD))
 
         fun start(c: Context) =
             c.startForegroundService(Intent(c, FoldBlurService::class.java))

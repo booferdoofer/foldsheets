@@ -45,7 +45,7 @@ object Diag {
 
     fun log(s: String) {
         lines.addFirst("${fmt.format(java.util.Date())}  $s")
-        while (lines.size > 40) lines.removeLast()
+        while (lines.size > 25) lines.removeLast()
         listener?.invoke()
     }
 
