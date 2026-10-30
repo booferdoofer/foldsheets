@@ -42,6 +42,10 @@ class FoldBlurService : Service(), SensorEventListener {
     private var gestureStartMs = 0L
     private val trail = StringBuilder()      // hinge readings during this gesture, for the log
     private val extraSensors = mutableListOf<Sensor>()
+    private var fine: Sensor? = null         // Samsung "Folding Angle" (0.01° steps), if present
+    private var fineSeen = false             // it has actually delivered readings
+    private var trailAngle = Float.NaN
+    private val firstSeen = mutableSetOf<String>()
     private var panelKey = 0L
     private var settings = BlurSettings(70, 90, 320, 0.12f, true)
 
@@ -65,7 +69,7 @@ class FoldBlurService : Service(), SensorEventListener {
                 panelKey = k              // (rotation alone doesn't change this)
                 if (folding) {
                     trail.append(" [switch]")
-                    keepBlurred(SETTLE_MID_MS)   // still folding: keep holding
+                    keepBlurred(if (fineSeen) SETTLE_FINE_MID_MS else SETTLE_COARSE_MID_MS)
                 } else {
                     trigger(HOLD_AFTER_SWAP_MS)
                 }
@@ -96,6 +100,8 @@ class FoldBlurService : Service(), SensorEventListener {
                 s.name.contains(it, true) || s.stringType.contains(it, true)
             }
         }.let { extraSensors.addAll(it) }
+        fine = extraSensors.firstOrNull { it.stringType == "com.samsung.sensor.folding_angle" }
+            ?: extraSensors.firstOrNull { it.name.contains("folding angle", true) }
 
         val f = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
@@ -129,8 +135,11 @@ class FoldBlurService : Service(), SensorEventListener {
         panelKey = currentPanelKey()
         anchorAngle = Float.NaN
         displays.registerDisplayListener(displayListener, main)
-        hinge?.let { sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, main) }
-        extraSensors.forEach { sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, main) }
+        val results = (listOfNotNull(hinge) + extraSensors).map {
+            val ok = sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST, main)
+            "${it.name.take(16)}=${if (ok) "ok" else "REFUSED"}"
+        }
+        Diag.log("sensors: " + results.joinToString(", "))
     }
 
     private fun stopListening() {
@@ -143,14 +152,20 @@ class FoldBlurService : Service(), SensorEventListener {
     }
 
     override fun onSensorChanged(e: SensorEvent) {
-        if (e.sensor != hinge) {
-            // Vendor sensor: just record what it says during a gesture so we can learn from it.
-            if (folding) trail.append(" {${e.sensor.name.take(14)}:${e.values.take(3).joinToString("/") { it.toInt().toString() }}}")
-            return
+        val name = e.sensor.name
+        if (firstSeen.add(name)) {
+            Diag.log("first reading from $name: " + e.values.take(4).joinToString("/") { "%.1f".format(it) })
         }
+        val isFine = fine != null && e.sensor == fine
+        val isCoarse = e.sensor == hinge
+        if (isFine) fineSeen = true
+        if (!isFine && !isCoarse) return
+        // Once the precise sensor is working, the 90°-step one is only used for the log.
+        if (isCoarse && fineSeen) return
+
         val a = e.values[0]
         if (anchorAngle.isNaN()) { anchorAngle = a; return }
-        if (abs(a - anchorAngle) < MOVE_THRESHOLD_DEG) return
+        if (abs(a - anchorAngle) < (if (isFine) FINE_THRESHOLD_DEG else 1f)) return
         val prev = anchorAngle
         anchorAngle = a
         if (!settings.hingePreBlur) return
@@ -159,15 +174,23 @@ class FoldBlurService : Service(), SensorEventListener {
             folding = true
             gestureStartMs = System.currentTimeMillis()
             trail.setLength(0)
-            trail.append("hinge ${prev.toInt()}")
+            trail.append(if (isFine) "angle " else "hinge ").append(prev.toInt())
+            trailAngle = prev
             settings = Prefs.load(this)
             overlay.configure(settings)
         }
-        trail.append("→${a.toInt()}")
-        // Fully open or fully closed: the fold is done, focus soon.
-        // Anywhere in between: the user may still be moving it, keep holding.
+        if (!isFine || abs(a - trailAngle) >= 20f || a <= CLOSED_DEG || a >= OPEN_DEG) {
+            if (trailAngle.toInt() != a.toInt()) trail.append("→").append(a.toInt())
+            trailAngle = a
+        }
         val atRest = a <= CLOSED_DEG || a >= OPEN_DEG
-        keepBlurred(if (atRest) SETTLE_AT_REST_MS else SETTLE_MID_MS)
+        keepBlurred(
+            when {
+                atRest -> SETTLE_AT_REST_MS            // fully open/closed: focus soon
+                isFine -> SETTLE_FINE_MID_MS           // precise sensor went quiet part-way = stopped
+                else -> SETTLE_COARSE_MID_MS           // 90° steps: wait for the next step
+            }
+        )
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -217,7 +240,9 @@ class FoldBlurService : Service(), SensorEventListener {
         private const val CLOSED_DEG = 10f           // at or below = fully closed
         private const val OPEN_DEG = 170f            // at or above = fully open
         private const val SETTLE_AT_REST_MS = 200L   // after reaching open/closed, then focus
-        private const val SETTLE_MID_MS = 700L       // part-way and no new reading: assume it stopped
+        private const val FINE_THRESHOLD_DEG = 1.5f  // ignore jitter on the precise sensor
+        private const val SETTLE_FINE_MID_MS = 400L  // precise sensor still for this long = stopped
+        private const val SETTLE_COARSE_MID_MS = 2000L // coarse sensor: hold up to 2 s for next step
         private const val HOLD_AFTER_SWAP_MS = 250L  // switch with no hinge readings at all
 
         fun start(c: Context) =

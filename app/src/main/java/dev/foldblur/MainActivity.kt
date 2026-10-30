@@ -31,6 +31,8 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var live: TextView
     private lateinit var diag: TextView
     private var hingeEvents = 0
+    private val liveValues = linkedMapOf<String, String>()
+    private val liveCounts = mutableMapOf<String, Int>()
     private val blurListener = java.util.function.Consumer<Boolean> { runOnUiThread { refresh() } }
     private lateinit var sensors: SensorManager
     private var lastAngle = Float.NaN
@@ -104,8 +106,12 @@ class MainActivity : Activity(), SensorEventListener {
     override fun onResume() {
         super.onResume()
         refresh()
-        sensors.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE)?.let {
-            sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        sensors.getSensorList(Sensor.TYPE_ALL).filter { s ->
+            s.type == Sensor.TYPE_HINGE_ANGLE ||
+                listOf("hinge", "fold", "angle").any { s.name.contains(it, true) || s.stringType.contains(it, true) }
+        }.forEach {
+            val ok = sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+            liveValues.putIfAbsent(it.name, if (ok) "no readings yet" else "REFUSED")
         }
         if (Prefs.isEnabled(this) && Settings.canDrawOverlays(this)) FoldBlurService.start(this)
         getSystemService(WindowManager::class.java).addCrossWindowBlurEnabledListener(mainExecutor, blurListener)
@@ -119,7 +125,13 @@ class MainActivity : Activity(), SensorEventListener {
         super.onPause()
     }
 
-    override fun onSensorChanged(e: SensorEvent) { lastAngle = e.values[0]; hingeEvents++; updateLive() }
+    override fun onSensorChanged(e: SensorEvent) {
+        if (e.sensor.type == Sensor.TYPE_HINGE_ANGLE) { lastAngle = e.values[0]; hingeEvents++ }
+        val n = (liveCounts[e.sensor.name] ?: 0) + 1
+        liveCounts[e.sensor.name] = n
+        liveValues[e.sensor.name] = e.values.take(3).joinToString(" / ") { "%.1f".format(it) } + "  ($n)"
+        updateLive()
+    }
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     private fun preview() {
@@ -151,7 +163,8 @@ class MainActivity : Activity(), SensorEventListener {
         val m = getSystemService(android.hardware.display.DisplayManager::class.java)
             .getDisplay(Display.DEFAULT_DISPLAY)?.mode
         val angle = if (lastAngle.isNaN()) "—" else "${lastAngle.roundToInt()}°"
-        live.text = "Hinge: $angle ($hingeEvents updates)    Panel: ${m?.physicalWidth}×${m?.physicalHeight}\n"
+        live.text = "Hinge: $angle ($hingeEvents updates)    Panel: ${m?.physicalWidth}×${m?.physicalHeight}\n" +
+            liveValues.entries.joinToString("\n") { "• ${it.key}: ${it.value}" } + "\n"
     }
 
     // --- tiny view helpers (no extra libraries) ---

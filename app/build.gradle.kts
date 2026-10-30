@@ -11,8 +11,8 @@ android {
         applicationId = "dev.foldblur"
         minSdk = 31          // window blur APIs need Android 12+
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
     }
 
 
