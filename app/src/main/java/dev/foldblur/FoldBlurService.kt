@@ -107,7 +107,7 @@ class FoldBlurService : Service(), SensorEventListener {
                 panelKey = k              // (rotation alone doesn't change this)
                 if (folding) {
                     trail.append(" [switch]")
-                    if (fineSeen) keepBlurred(SETTLE_FINE_MID_MS)
+                    if (fineSeen || ExactAngle.isLive) keepBlurred(SETTLE_FINE_MID_MS)
                     else if (!gyroOn) keepBlurred(HOLD_AFTER_SWAP_MS)
                     // else: the gyro watch is already deciding when the fold has stopped
                 } else {
@@ -120,8 +120,8 @@ class FoldBlurService : Service(), SensorEventListener {
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             when (i.action) {
-                Intent.ACTION_SCREEN_ON -> startListening()
-                Intent.ACTION_SCREEN_OFF -> { stopListening(); overlay.dismissNow() }
+                Intent.ACTION_SCREEN_ON -> { startListening(); startExactIfPaired() }
+                Intent.ACTION_SCREEN_OFF -> { stopListening(); overlay.dismissNow(); ExactAngle.stop() }
             }
         }
     }
@@ -157,7 +157,11 @@ class FoldBlurService : Service(), SensorEventListener {
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(screenReceiver, f, RECEIVER_NOT_EXPORTED)
         else registerReceiver(screenReceiver, f)
 
-        if (getSystemService(PowerManager::class.java).isInteractive) startListening()
+        ExactAngle.onAngle = { onExact(it) }
+        if (getSystemService(PowerManager::class.java).isInteractive) {
+            startListening()
+            startExactIfPaired()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -166,8 +170,14 @@ class FoldBlurService : Service(), SensorEventListener {
         return START_STICKY
     }
 
+    private fun startExactIfPaired() {
+        if (Prefs.isPaired(this) && Prefs.exactEnabled(this)) ExactAngle.start(this)
+    }
+
     override fun onDestroy() {
         Diag.log("listener stopped")
+        ExactAngle.stop()
+        ExactAngle.onAngle = null
         stopListening()
         try { unregisterReceiver(screenReceiver) } catch (_: Exception) {}
         overlay.dismissNow()
@@ -369,9 +379,18 @@ class FoldBlurService : Service(), SensorEventListener {
         if (isFine) fineSeen = true
         if (!isFine && !isCoarse) return
         // Once the precise sensor is working, the 90°-step one is only used for the log.
-        if (isCoarse && fineSeen) return
+        if (isCoarse && (fineSeen || ExactAngle.isLive)) return
+        handleAngle(e.values[0], isFine)
+    }
 
-        val a = e.values[0]
+    /** Exact angle from Wireless debugging (dumpsys), delivered on the main thread. */
+    private fun onExact(a: Float) {
+        if (!listening || recording) return
+        coarseAngle = a
+        handleAngle(a, true)
+    }
+
+    private fun handleAngle(a: Float, isFine: Boolean) {
         if (anchorAngle.isNaN()) { anchorAngle = a; return }
         if (abs(a - anchorAngle) < (if (isFine) FINE_THRESHOLD_DEG else 1f)) return
         val prev = anchorAngle

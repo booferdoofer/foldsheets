@@ -11,8 +11,8 @@ android {
         applicationId = "dev.foldblur"
         minSdk = 31          // window blur APIs need Android 12+
         targetSdk = 35
-        versionCode = 11
-        versionName = "1.1.0"
+        versionCode = 12
+        versionName = "1.2.0"
     }
 
 
@@ -24,4 +24,9 @@ android {
         jvmTarget = "17"
     }
 }
-// No dependencies beyond the Kotlin standard library.
+dependencies {
+    // Talks to the phone's own Wireless debugging (like Shizuku does), to read exact hinge angle.
+    implementation("com.github.MuntashirAkon:libadb-android:3.1.1")
+    implementation("com.github.MuntashirAkon:sun-security-android:1.1")
+    implementation("org.conscrypt:conscrypt-android:2.5.3")
+}

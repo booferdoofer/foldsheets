@@ -12,6 +12,11 @@
     <!-- Discovery only: lets the app see which permissions Samsung's packages define -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
+    <!-- Wireless debugging connection (to read the exact hinge angle) and the pairing notification -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <uses-feature android:name="android.hardware.sensor.hinge_angle" android:required="false" />
 
     <application
@@ -38,6 +43,10 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Draws a brief blur overlay while the device folds or unfolds" />
         </service>
+
+        <receiver
+            android:name=".PairingReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".BootReceiver"

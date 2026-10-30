@@ -19,6 +19,8 @@ object Prefs {
     const val K_DIM = "dim"
     const val K_HINGE = "hinge"
     const val K_SMOOTH = "smooth"
+    const val K_PAIRED = "adb_paired"
+    const val K_EXACT = "exact_enabled"
 
     private fun sp(c: Context): SharedPreferences =
         c.applicationContext.getSharedPreferences("cfg", Context.MODE_PRIVATE)
@@ -30,10 +32,12 @@ object Prefs {
             fadeOutMs = it.getInt(K_FADE_OUT, 450).coerceIn(150, 600).toLong(),
             dim = it.getInt(K_DIM, 12).coerceIn(0, 40) / 100f,
             hingePreBlur = it.getBoolean(K_HINGE, true),
-            smooth = it.getBoolean(K_SMOOTH, true),
+            smooth = it.getBoolean(K_SMOOTH, false),
         )
     }
 
+    fun isPaired(c: Context) = sp(c).getBoolean(K_PAIRED, false)
+    fun exactEnabled(c: Context) = sp(c).getBoolean(K_EXACT, true)
     fun isEnabled(c: Context) = sp(c).getBoolean(K_ENABLED, false)
     fun setEnabled(c: Context, v: Boolean) = sp(c).edit().putBoolean(K_ENABLED, v).apply()
     fun putInt(c: Context, k: String, v: Int) = sp(c).edit().putInt(k, v).apply()

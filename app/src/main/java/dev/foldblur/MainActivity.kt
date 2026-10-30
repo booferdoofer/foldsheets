@@ -30,6 +30,8 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var status: TextView
     private lateinit var live: TextView
     private lateinit var diag: TextView
+    private lateinit var exactStatus: TextView
+    private var lastTest = ""
     private var hingeEvents = 0
     private val liveValues = linkedMapOf<String, String>()
     private val liveCounts = mutableMapOf<String, Int>()
@@ -85,6 +87,29 @@ class MainActivity : Activity(), SensorEventListener {
         col.addView(slider("Focus-in time", 150, 600, s.fadeOutMs.toInt(), "ms") { Prefs.putInt(this, Prefs.K_FADE_OUT, it) })
         col.addView(slider("Depth dim", 0, 40, (s.dim * 100).roundToInt(), "%") { Prefs.putInt(this, Prefs.K_DIM, it) })
 
+        // ---- Exact hinge angle through Wireless debugging ----
+        col.addView(text("\nExact hinge angle (Wireless debugging)", 18f, bold = true))
+        exactStatus = text("", 14f).also { col.addView(it) }
+        col.addView(text("1. Tap \"Start pairing\" (allow notifications).\n" +
+            "2. In Developer options → Wireless debugging, turn it on, then tap \"Pair device with pairing code\".\n" +
+            "3. Pull down the notification shade and type the 6-digit code into the Fold Blur notification.", 13f))
+        col.addView(button("Start pairing") {
+            if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+            }
+            PairingNotif.show(this, "Open the pairing-code box in Wireless debugging, then tap Enter code here.", askForCode = true)
+            runCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
+        })
+        col.addView(button("Test exact angle") {
+            lastTest = "Testing… (Wireless debugging must be on)"
+            ExactAngle.test(this) { r -> lastTest = r }
+        })
+        col.addView(button("Start / restart live exact angle") {
+            ExactAngle.stop()
+            Prefs.putBool(this, Prefs.K_EXACT, true)
+            ExactAngle.start(this)
+        })
         col.addView(button("Preview transition") { preview() })
         col.addView(button("Test: hold layer for 2 seconds") {
             if (!Settings.canDrawOverlays(this)) return@button
@@ -181,11 +206,21 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    private fun refreshExact() {
+        if (!::exactStatus.isInitialized) return
+        val paired = Prefs.isPaired(this)
+        val a = ExactAngle.angle
+        exactStatus.text = "Paired: ${if (paired) "yes" else "no"}   Feed: ${ExactAngle.status}" +
+            (if (ExactAngle.isLive && !a.isNaN()) "   Exact angle: ${"%.1f".format(a)}°" else "") +
+            (if (lastTest.isNotEmpty()) "\nTest: $lastTest" else "")
+    }
+
     private fun updateLive() {
         if (!::live.isInitialized) return
         val m = getSystemService(android.hardware.display.DisplayManager::class.java)
             .getDisplay(Display.DEFAULT_DISPLAY)?.mode
         val angle = if (lastAngle.isNaN()) "—" else "${lastAngle.roundToInt()}°"
+        refreshExact()
         val est = Live.estAngle
         live.text = "Estimated angle: ${if (est.isNaN()) "— (turn on Enabled)" else "~${est.roundToInt()}°"}  ${Live.note}\n" +
             "Hinge: $angle ($hingeEvents updates)    Panel: ${m?.physicalWidth}×${m?.physicalHeight}\n" +
