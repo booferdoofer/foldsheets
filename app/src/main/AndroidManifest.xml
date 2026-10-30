@@ -9,6 +9,9 @@
     <!-- Re-arm after a reboot if the user left it enabled -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Discovery only: lets the app see which permissions Samsung's packages define -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
     <uses-feature android:name="android.hardware.sensor.hinge_angle" android:required="false" />
 
     <application

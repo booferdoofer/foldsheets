@@ -93,8 +93,15 @@ class MainActivity : Activity(), SensorEventListener {
         col.addView(text("\nEvent log", 16f, bold = true))
         diag = text("", 12f).also { col.addView(it) }
         diag.setTypeface(Typeface.MONOSPACE)
+        diag.setTextIsSelectable(true)
+        col.addView(button("Copy log") {
+            val cm = getSystemService(android.content.ClipboardManager::class.java)
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("Fold Blur log", Diag.text()))
+            Toast.makeText(this, "Log copied, paste it in the chat", Toast.LENGTH_SHORT).show()
+        }, col.indexOfChild(diag))
         Diag.listener = { runOnUiThread { diag.text = Diag.text() } }
         if (savedInstanceState == null) {
+            Diag.log("DISCOVERY\n" + runCatching { Discovery.run(this) }.getOrElse { "failed: $it" })
             Diag.log(SamsungBlur.probe())
             val hs = sensors.getSensorList(Sensor.TYPE_ALL).filter { s ->
                 listOf("hinge", "fold", "angle", "hall").any { s.name.contains(it, true) || s.stringType.contains(it, true) }
